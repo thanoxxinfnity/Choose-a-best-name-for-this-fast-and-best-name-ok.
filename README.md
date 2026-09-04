@@ -1,6 +1,7 @@
-# AI Video Editor - Native Kotlin Android app + Python FastAPI backend
+# Moja AI - Native Kotlin Android app + Python FastAPI backend
 
-A complete, production-shaped AI short-form video editor:
+A complete, production-shaped AI short-form video editor that **looks at your
+footage before it plans the edit**:
 
 * **Android client** - native Kotlin / Jetpack Compose, `EncryptedSharedPreferences`
   for the API keys, multi-clip picker, native **ExoPlayer (Media3)** preview and a
@@ -14,15 +15,25 @@ A complete, production-shaped AI short-form video editor:
 ┌──────────────────────────┐        multipart upload         ┌─────────────────────────────┐
 │  Android (Kotlin)        │  ─────────────────────────────► │  FastAPI backend            │
 │  • MainActivity.kt       │   X-Puter-Key / X-NIM-Key /     │  • main.py                  │
-│  • Settings.kt (crypto)  │   X-YouTube-Token headers       │  • orchestrator.py  (Kimi)  │
-│  • ApiClient.kt (OkHttp) │                                 │  • puter_integration.py     │
-│  • ExoPlayer preview     │ ◄───────────────────────────────│  • video_renderer.py        │
+│  • Settings.kt (crypto)  │   X-YouTube-Token headers       │  • video_analyzer.py  ◄─ 1  │
+│  • ApiClient.kt (OkHttp) │                                 │  • orchestrator.py    ◄─ 2  │
+│  • ExoPlayer preview     │ ◄───────────────────────────────│  • video_renderer.py  ◄─ 3  │
 └──────────────────────────┘   Range-enabled MP4 stream      └─────────────────────────────┘
-                                                                │        │           │
-                                                    Puter.js ◄──┘        │           └──► FFmpeg / MoviePy
-                                            (TTS, txt2img, inpaint)      │                Faster-Whisper
-                                                                         └──► NVIDIA NIM (Kimi K3)
+
+  1. SEE     scene cuts, motion peaks, palette, beats, silence  (OpenCV + DSP)
+             subjects / art style / mood / energy               (NIM vision model)
+  2. PLAN    a JSON edit timeline that matches what is on screen (Kimi K3 on NIM)
+  3. RENDER  theme grade + impact shake + stickers + captions    (FFmpeg / MoviePy)
+                                                                 + Puter.js assets
 ```
+
+**Why the analysis pass matters.** Without it the planner only sees a filename.
+A Jujutsu Kaisen fight edit whose file happened to be named
+`...Quiet_nature_ideas...` got a calm nature plan - "GOLDEN LOTUS" stickers and
+a *"Just Breathe"* title over a sword fight. With the vision pass the same clip
+is reported as `anime_edit / 2D anime / dark fantasy, high energy, 172 BPM`, and
+Kimi returns `FIGHT` / `POWER` / `UNSTOPPABLE` with sword-slash and magic-circle
+stickers on 1-2 second jump cuts.
 
 ---
 
@@ -39,7 +50,12 @@ android/                         Native Kotlin app (Gradle, AGP 8.7, Kotlin 2.0)
     ui/Theme.kt                  Material 3 theme
 backend/
   main.py                        FastAPI app + endpoints
+  video_analyzer.py              What is in the footage: CV/DSP + NIM vision pass
   orchestrator.py                Kimi K3 (NVIDIA NIM) -> JSON editing timeline
+  themes.py                      Haunted / Playful / Normal / Anime editing modes
+  vfx.py                         Shake, RGB split, motion blur, grade, vignette, bloom
+  sticker_art.py                 Procedural vector sticker artwork
+  puter_video.py                 wan2.2 text-to-video, image-to-video, keyframe animation
   puter_integration.py           Puter.js TTS / txt2img+rembg / inpainting + OpenCV
   video_renderer.py              FFmpeg + MoviePy + Faster-Whisper pipeline
   jobs.py                        Background job manager
@@ -143,6 +159,7 @@ backend URL you configured; the backend never writes them to disk.
 
 | Stage | Service | Implementation |
 |---|---|---|
+| Footage analysis | OpenCV + **NIM vision** | `video_analyzer.py` - scene cuts by histogram distance, motion peaks, k-means palette, audio envelope (silence spans, onset beats, BPM); then a contact sheet of key frames goes to `meta/llama-3.2-90b-vision-instruct` for subjects, art style, mood, energy and footage-appropriate sticker/text ideas |
 | Editing timeline | **Kimi K3** on NVIDIA NIM | `orchestrator.py` - the blueprint system prompt, strict JSON out, deterministic fallback editor when NIM is unavailable |
 | Voiceover | **Puter.js TTS** | `puter_integration.py::text_to_speech` - `en-IN` neural voice (`Kajal` / `Arjun` / `Aditi`), long scripts chunked and concatenated with ffmpeg, saved as `.mp3` |
 | Stickers | **Puter.js txt2img** + `rembg` | `generate_sticker` - image generated, background removed with `rembg`, alpha-trimmed and saved as a transparent PNG |
@@ -150,8 +167,20 @@ backend URL you configured; the backend never writes them to disk.
 | Captions | **Faster-Whisper** | word-level timestamps, rendered with Pillow (no ImageMagick needed) and animated per word |
 | Render | **FFmpeg + MoviePy** | jump cuts, zoom punches, speed ramps, scale-to-cover vertical reframing, sticker/text overlays, audio ducking, H.264 `yuv420p` + `faststart` |
 
+| Editing modes | local | `themes.py` - **Haunted** (desaturated, cold tint, heavy vignette, handheld drift), **Playful** (vibrant, beat-locked pulse zoom), **Normal Edits** (cinematic grade), **Anime Edits** (punched contrast, bloom, directional impact shake with RGB split and motion blur on every cut). Selected by `choose_theme()` from content type, brightness and energy, or forced with the `theme` form field |
+| Video generation | **Puter.js wan2.2** | `puter_video.py` - text-to-video (`wan-ai/wan2.2-t2v-a14b`), image-to-video (`wan-ai/wan2.2-i2v-a14b`), and keyframe-to-animation insertion: a still is lifted from the source at a chosen timestamp, animated with the surrounding story context, conformed to the canvas and spliced into the timeline |
+
 The JSON contract Kimi K3 must emit is documented in `docs/PIPELINE.md` and
 enforced by `schemas.EditPlan`.
+
+### Editing modes
+
+| Key | Mode | Look | Motion |
+|---|---|---|---|
+| `anime_edits` | Anime Edits | saturation 1.32, contrast 1.22, bloom 0.42 | directional impact shake, RGB split, motion blur, 0.9-2.2s jump cuts |
+| `haunted` | Haunted Mode | saturation 0.55, cold tint, vignette 0.62 | slow handheld drift, 2.6-5.5s crossfades |
+| `playful` | Playful Mode | saturation 1.42, warm tint, bloom 0.26 | beat-locked pulse zoom, 1.2-3.0s zoom punches |
+| `normal` | Normal Edits | saturation 1.06, vignette 0.18 | none, 2.5-5.0s crossfades |
 
 ---
 

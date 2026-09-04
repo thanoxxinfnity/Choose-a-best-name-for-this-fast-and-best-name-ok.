@@ -107,6 +107,27 @@ Poll this (the app polls every 2 s).
 `Accept-Ranges`/`Content-Range`, which is what lets ExoPlayer seek and scrub
 without downloading the whole file.
 
+## Analysis and editing modes
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/themes` | the four editing modes and their pacing/shake |
+| `POST` | `/api/v1/analyze` | multipart `video` -> subjects, art style, mood, energy, scene cuts, motion peaks, palette, beats, BPM, silence spans, recommended theme |
+
+`POST /api/v1/render` also accepts `theme` (`auto`, `anime_edits`, `haunted`,
+`playful`, `normal`) and `enable_animation` (keyframe-to-animation insertion).
+
+## AI video generation (Puter.js wan2.2)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| `POST` | `/api/v1/video/text-to-video` | `{"prompt": "...", "seconds": 5, "resolution": "720x1280"}` | `video/mp4` from `wan-ai/wan2.2-t2v-a14b` |
+| `POST` | `/api/v1/video/image-to-video` | multipart `image` + `prompt`, `seconds`, `motion_strength` | `video/mp4` from `wan-ai/wan2.2-i2v-a14b` |
+| `POST` | `/api/v1/video/animate-keyframe` | multipart `video` + `timestamp`, `prompt`, `story_context` | the keyframe animated and conformed to the canvas |
+
+All three require `X-Puter-Key`; generation is long-running, so the client polls
+the driver's job handle internally and answers once the clip is ready.
+
 ## Direct AI endpoints
 
 | Method | Path | Body | Returns |
