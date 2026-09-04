@@ -300,6 +300,8 @@ class KimiOrchestrator:
         target_duration: Optional[float] = None,
         max_stickers: int = 4,
         max_inpaints: int = 2,
+        analyses: Optional[Sequence[Any]] = None,
+        theme: Optional[str] = None,
     ) -> tuple[EditPlan, List[str]]:
         """Return ``(plan, warnings)``; never raises for recoverable failures."""
         warnings: List[str] = []
@@ -311,10 +313,11 @@ class KimiOrchestrator:
                 "No NVIDIA NIM API key supplied - used the built-in deterministic editor "
                 "instead of Kimi K3."
             )
-            return build_fallback_plan(prompt, clips, youtube_reference, target), warnings
+            return build_fallback_plan(prompt, clips, youtube_reference, target, analyses), warnings
 
         user_message = self._compose_user_message(
-            prompt, clips, youtube_reference, target, max_stickers, max_inpaints
+            prompt, clips, youtube_reference, target, max_stickers, max_inpaints,
+            analyses=analyses, theme=theme,
         )
 
         raw: Optional[str] = None
@@ -336,7 +339,7 @@ class KimiOrchestrator:
 
         if not raw:
             warnings.append("Kimi K3 did not return a plan - used the deterministic editor.")
-            return build_fallback_plan(prompt, clips, youtube_reference, target), warnings
+            return build_fallback_plan(prompt, clips, youtube_reference, target, analyses), warnings
 
         try:
             payload = extract_json(raw)
@@ -344,13 +347,13 @@ class KimiOrchestrator:
         except Exception as exc:
             logger.warning("Kimi returned an unusable timeline: %s", exc)
             warnings.append(f"Kimi returned an unusable timeline ({exc}) - used the deterministic editor.")
-            return build_fallback_plan(prompt, clips, youtube_reference, target), warnings
+            return build_fallback_plan(prompt, clips, youtube_reference, target, analyses), warnings
 
         plan, sanitise_warnings = sanitise_plan(plan, clips, max_stickers, max_inpaints)
         warnings.extend(sanitise_warnings)
         if not plan.edit_timeline:
             warnings.append("Kimi produced an empty timeline - used the deterministic editor.")
-            return build_fallback_plan(prompt, clips, youtube_reference, target), warnings
+            return build_fallback_plan(prompt, clips, youtube_reference, target, analyses), warnings
         return plan, warnings
 
     # ------------------------------------------------------------- internals
@@ -447,6 +450,8 @@ class KimiOrchestrator:
         target_duration: float,
         max_stickers: int,
         max_inpaints: int,
+        analyses: Optional[Sequence[Any]] = None,
+        theme: Optional[str] = None,
     ) -> str:
         clip_lines = [
             f"  [{index}] {clip.filename} - {clip.duration:.2f}s, "
@@ -465,8 +470,26 @@ class KimiOrchestrator:
             "",
             f"[TARGET] resolution 1080x1920, 60 fps, about {target_duration:.0f} seconds total.",
         ]
+        if analyses:
+            blocks += ["", "[WHAT IS ACTUALLY IN THE FOOTAGE - from a vision pass over "
+                           "sampled frames plus motion, scene-cut and audio analysis]"]
+            for index, analysis in enumerate(analyses):
+                blocks.append(f"  clip [{index}]:")
+                blocks.append(
+                    "\n".join(f"    {line}" for line in analysis.to_prompt_block().splitlines())
+                )
+            blocks += [
+                "",
+                "Base every sticker, text overlay and cut on THAT description - it is what "
+                "the viewer will actually see. Do not invent a subject that is not listed. "
+                "Prefer cutting on the listed scene cuts and landing stickers or text on the "
+                "listed high-motion moments and beats.",
+            ]
+        if theme:
+            blocks += ["", f"[THEME PRESET] {theme} - match its look and pacing."]
         if reference is not None:
-            blocks += ["", "[YOUTUBE REFERENCE]", reference.to_prompt_block()]
+            blocks += ["", "[YOUTUBE REFERENCE - the style the user wants to match]",
+                       reference.to_prompt_block()]
         blocks += [
             "",
             PLAN_CONSTRAINTS.format(
@@ -620,6 +643,7 @@ def build_fallback_plan(
     clips: Sequence[ClipInfo],
     reference: Optional[YouTubeReference] = None,
     target_duration: float = 30.0,
+    analyses: Optional[Sequence[Any]] = None,
 ) -> EditPlan:
     """A sensible fast-cut vertical edit produced without any LLM."""
     plan = EditPlan(
@@ -636,7 +660,15 @@ def build_fallback_plan(
     if not clips:
         return plan
 
+    # When the footage was analysed, borrow its ideas and its natural cuts so
+    # even the no-LLM path matches what is on screen.
+    analysis = analyses[0] if analyses else None
+    sticker_ideas = list(getattr(analysis, "sticker_ideas", None) or _STICKER_IDEAS)
+    text_ideas = list(getattr(analysis, "text_ideas", None) or [])
+
     segment_length = 3.0
+    if analysis is not None and getattr(analysis, "energy", "") == "high":
+        segment_length = 1.6
     segments: List[TimelineSegment] = []
     remaining = max(target_duration, segment_length)
     cursors: Dict[int, float] = {index: 0.0 for index in range(len(clips))}
@@ -666,18 +698,21 @@ def build_fallback_plan(
             cut_type="jump_cut" if position % 3 else "zoom_punch",
             source_index=index,
         )
-        if position in (1, 4) and position // 3 < len(_STICKER_IDEAS):
+        if position in (1, 4, 7) and position // 3 < len(sticker_ideas):
             segment.puter_sticker = PuterSticker(
-                generate_prompt=_STICKER_IDEAS[position // 3],
+                generate_prompt=sticker_ideas[position // 3],
                 position="bottom_center" if position % 2 else "top_center",
                 animation="pop_up",
             )
-        if position == 0:
+        if position % 3 == 0 and text_ideas:
+            segment.text_overlay = TextOverlay(
+                text=text_ideas[(position // 3) % len(text_ideas)],
+                position="center", animation="pop_up", style="3d_pop",
+            )
+        elif position == 0:
             segment.text_overlay = TextOverlay(
                 text=_headline(prompt, reference),
-                position="center",
-                animation="pop_up",
-                style="3d_pop",
+                position="center", animation="pop_up", style="3d_pop",
             )
         segments.append(segment)
         remaining -= end - start

@@ -54,7 +54,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.aivideo.editor.ui.AIVideoEditorTheme
+import com.aivideo.editor.ui.MojaAITheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -175,7 +175,7 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            AIVideoEditorTheme {
+            MojaAITheme {
                 SettingsScreen(onBack = { finish() })
             }
         }

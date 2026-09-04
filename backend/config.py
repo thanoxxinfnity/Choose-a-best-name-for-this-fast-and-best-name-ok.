@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------ app --
-    app_name: str = "AI Video Editor API"
+    app_name: str = "Moja AI"
     app_version: str = "1.0.0"
     host: str = "0.0.0.0"
     port: int = 8000
@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     puter_txt2img_driver: str = "openai-image-generation"
     puter_txt2img_method: str = "generate"
 
+    # --- video generation (wan 2.2 text-to-video / image-to-video) ---------
+    puter_video_interface: str = "puter-video-generation"
+    puter_video_driver: str = "wan-ai"
+    puter_video_method: str = "generate"
+    puter_video_status_method: str = "status"
+    puter_video_timeout: int = 900
+    puter_t2v_model: str = "wan-ai/wan2.2-t2v-a14b"
+    puter_i2v_model: str = "wan-ai/wan2.2-i2v-a14b"
+
     puter_inpaint_interface: str = "puter-image-generation"
     puter_inpaint_driver: str = "openai-image-generation"
     puter_inpaint_method: str = "edit"
@@ -68,6 +77,11 @@ class Settings(BaseSettings):
     nim_timeout: int = 120
     # NIM enforces its limit per minute; see RATE_LIMIT_BACKOFF in orchestrator.
     nim_max_retries: int = 5
+    # Vision pass: what is actually in the footage (subjects, style, mood).
+    nim_vision_model: str = "meta/llama-3.2-90b-vision-instruct"
+    nim_vision_fallback_model: str = "meta/llama-3.2-11b-vision-instruct"
+    analysis_frame_count: int = 4
+    enable_vision_analysis: bool = True
     nim_temperature: float = 0.6
     # Kimi K3 on NIM pins top_p at 0.95 and rejects anything else.
     nim_top_p: float = 0.95

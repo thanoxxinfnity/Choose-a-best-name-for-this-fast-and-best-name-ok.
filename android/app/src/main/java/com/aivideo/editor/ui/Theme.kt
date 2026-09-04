@@ -54,7 +54,7 @@ private val AppTypography = Typography(
 )
 
 @Composable
-fun AIVideoEditorTheme(
+fun MojaAITheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {

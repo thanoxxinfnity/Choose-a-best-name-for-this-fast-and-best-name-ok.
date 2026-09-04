@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for the AI Video Editor backend.
+"""FastAPI entrypoint for the Moja AI backend.
 
 Endpoints
 ---------
@@ -48,24 +48,35 @@ from config import settings
 from jobs import JobCredentials, JobRequest, job_manager
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from puter_integration import PuterClient, PuterError, ffmpeg_available, rembg_available
+from puter_video import (
+    IMAGE_TO_VIDEO_MODEL,
+    TEXT_TO_VIDEO_MODEL,
+    PuterVideoClient,
+    animate_keyframe,
+)
 from schemas import (
     ClipInfo,
     EditPlan,
     HealthResponse,
+    ImageToVideoRequest,
     JobCreatedResponse,
     JobStage,
     JobStatus,
     PlanRequest,
     StickerRequest,
+    TextToVideoRequest,
+    ThemeInfo,
     TtsRequest,
 )
+from themes import THEMES, resolve_theme
+from video_analyzer import analyse_video
 from video_renderer import probe_clip, whisper_available
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
-logger = logging.getLogger("aivideoeditor")
+logger = logging.getLogger("mojaai")
 
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp"}
 CHUNK_SIZE = 1024 * 1024
@@ -155,6 +166,10 @@ def health() -> HealthResponse:
             "nim_model": settings.nim_model,
             "whisper_model": settings.whisper_model,
             "rembg_model": settings.rembg_model,
+            "vision_model": settings.nim_vision_model,
+            "t2v_model": TEXT_TO_VIDEO_MODEL,
+            "i2v_model": IMAGE_TO_VIDEO_MODEL,
+            "themes": list(THEMES),
             "max_upload_mb": settings.max_upload_mb,
         },
     )
@@ -175,6 +190,8 @@ async def create_render_job(
     voice_accent: str = Form(default="indian_accent"),
     max_stickers: int = Form(default=4),
     max_inpaints: int = Form(default=2),
+    theme: str = Form(default="auto"),
+    enable_animation: bool = Form(default=False),
     credentials: JobCredentials = Depends(get_credentials),
 ) -> JobCreatedResponse:
     if not videos:
@@ -230,6 +247,8 @@ async def create_render_job(
             voice_accent=voice_accent,
             max_stickers=max(0, min(int(max_stickers), 10)),
             max_inpaints=max(0, min(int(max_inpaints), 6)),
+            theme=theme,
+            enable_animation=enable_animation,
         )
     )
     return JobCreatedResponse(
@@ -355,7 +374,7 @@ def download_video(job_id: str):
     return FileResponse(
         path,
         media_type="video/mp4",
-        filename=f"ai_edit_{job_id}.mp4",
+        filename=f"moja_ai_{job_id}.mp4",
         headers={"Accept-Ranges": "bytes"},
     )
 
@@ -417,6 +436,133 @@ def puter_sticker(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Sticker generation failed: {exc}") from exc
     return FileResponse(destination, media_type="image/png", filename="sticker.png")
+
+
+@app.get("/api/v1/themes", response_model=List[ThemeInfo])
+def list_themes() -> List[ThemeInfo]:
+    """The editing modes the renderer actually implements."""
+    return [
+        ThemeInfo(
+            key=theme.key,
+            name=theme.name,
+            description=theme.description,
+            default_cut=theme.default_cut,
+            shake=theme.shake_kind,
+        )
+        for theme in THEMES.values()
+    ]
+
+
+@app.post("/api/v1/analyze")
+async def analyze_upload(
+    video: UploadFile = File(...),
+    use_vision: bool = Form(default=True),
+    credentials: JobCredentials = Depends(get_credentials),
+):
+    """What is actually in this clip: subjects, style, cuts, beats, silence."""
+    suffix = Path(video.filename or "clip.mp4").suffix.lower() or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=settings.cache_dir) as handle:
+        while chunk := await video.read(CHUNK_SIZE):
+            handle.write(chunk)
+        path = Path(handle.name)
+    try:
+        analysis = analyse_video(
+            path,
+            nim_api_key=credentials.resolved_nim_key(),
+            use_vision=use_vision,
+        )
+        payload = analysis.to_dict()
+        payload["theme"] = resolve_theme(analysis.suggested_theme).key
+        payload["prompt_block"] = analysis.to_prompt_block()
+        return payload
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@app.post("/api/v1/video/text-to-video")
+def text_to_video(
+    payload: TextToVideoRequest = Body(...),
+    credentials: JobCredentials = Depends(get_credentials),
+):
+    """Generate a clip from a prompt with wan-ai/wan2.2-t2v-a14b."""
+    client = PuterVideoClient(api_key=credentials.resolved_puter_key())
+    destination = Path(tempfile.mkdtemp(prefix="t2v-", dir=settings.cache_dir)) / "generated.mp4"
+    try:
+        result = client.text_to_video(
+            payload.prompt, destination,
+            seconds=payload.seconds, resolution=payload.resolution,
+            model=settings.puter_t2v_model,
+            negative_prompt=payload.negative_prompt, seed=payload.seed,
+        )
+    except PuterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return FileResponse(
+        result.path, media_type="video/mp4", filename="moja_ai_t2v.mp4",
+        headers={"X-Moja-Model": result.model, "X-Moja-Elapsed": f"{result.elapsed:.1f}"},
+    )
+
+
+@app.post("/api/v1/video/image-to-video")
+async def image_to_video(
+    image: UploadFile = File(...),
+    prompt: str = Form(default=""),
+    seconds: float = Form(default=5.0),
+    motion_strength: float = Form(default=0.7),
+    credentials: JobCredentials = Depends(get_credentials),
+):
+    """Animate a still with wan-ai/wan2.2-i2v-a14b."""
+    workspace = Path(tempfile.mkdtemp(prefix="i2v-", dir=settings.cache_dir))
+    source = workspace / (Path(image.filename or "frame.png").name or "frame.png")
+    with source.open("wb") as handle:
+        while chunk := await image.read(CHUNK_SIZE):
+            handle.write(chunk)
+
+    client = PuterVideoClient(api_key=credentials.resolved_puter_key())
+    try:
+        result = client.image_to_video(
+            source, prompt, workspace / "generated.mp4",
+            seconds=seconds, model=settings.puter_i2v_model,
+            motion_strength=motion_strength,
+        )
+    except PuterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return FileResponse(
+        result.path, media_type="video/mp4", filename="moja_ai_i2v.mp4",
+        headers={"X-Moja-Model": result.model, "X-Moja-Elapsed": f"{result.elapsed:.1f}"},
+    )
+
+
+@app.post("/api/v1/video/animate-keyframe")
+async def animate_keyframe_endpoint(
+    video: UploadFile = File(...),
+    timestamp: float = Form(...),
+    prompt: str = Form(...),
+    story_context: str = Form(default=""),
+    seconds: float = Form(default=4.0),
+    motion_strength: float = Form(default=0.7),
+    credentials: JobCredentials = Depends(get_credentials),
+):
+    """Lift a keyframe out of a clip and animate it with image-to-video."""
+    workspace = Path(tempfile.mkdtemp(prefix="anim-", dir=settings.cache_dir))
+    suffix = Path(video.filename or "clip.mp4").suffix.lower() or ".mp4"
+    source = workspace / f"source{suffix}"
+    with source.open("wb") as handle:
+        while chunk := await video.read(CHUNK_SIZE):
+            handle.write(chunk)
+
+    client = PuterVideoClient(api_key=credentials.resolved_puter_key())
+    try:
+        result = animate_keyframe(
+            client, source, timestamp, prompt, workspace / "animated.mp4",
+            seconds=seconds, workspace=workspace, story_context=story_context,
+            motion_strength=motion_strength,
+        )
+    except PuterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return FileResponse(
+        result.path, media_type="video/mp4", filename="moja_ai_animated.mp4",
+        headers={"X-Moja-Model": result.model, "X-Moja-Elapsed": f"{result.elapsed:.1f}"},
+    )
 
 
 @app.post("/api/v1/probe")

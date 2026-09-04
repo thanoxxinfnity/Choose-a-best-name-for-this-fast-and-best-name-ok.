@@ -167,6 +167,30 @@ class PuterInpaint(BaseModel):
         return bool(self.active and self.replace_prompt.strip())
 
 
+class PuterAnimate(BaseModel):
+    """AI keyframe-to-animation insertion (Puter image-to-video)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    active: bool = False
+    # Timestamp inside the SOURCE clip to lift the still from. None -> the
+    # midpoint of the segment.
+    keyframe_time: Optional[float] = None
+    # A second keyframe may be animated for the same segment (1-2 per spec).
+    second_keyframe_time: Optional[float] = None
+    prompt: str = ""
+    story_context: str = ""
+    seconds: float = 4.0
+    motion_strength: float = 0.7
+    # replace: the generated clip stands in for the segment.
+    # insert:  it is spliced in directly after the segment.
+    mode: str = "insert"
+
+    @property
+    def is_enabled(self) -> bool:
+        return bool(self.active and self.prompt.strip())
+
+
 class TextOverlay(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -195,6 +219,7 @@ class TimelineSegment(BaseModel):
     speed: float = 1.0
     puter_sticker: Optional[PuterSticker] = None
     puter_inpaint: Optional[PuterInpaint] = None
+    puter_animate: Optional[PuterAnimate] = None
     text_overlay: Optional[TextOverlay] = None
 
     @field_validator("start_time", "end_time", mode="before")
@@ -248,6 +273,7 @@ class EditPlan(BaseModel):
     audio: AudioSpec = Field(default_factory=AudioSpec)
     edit_timeline: List[TimelineSegment] = Field(default_factory=list)
     captions: CaptionSpec = Field(default_factory=CaptionSpec)
+    theme: str = "normal"
     notes: Optional[str] = None
 
     @property
@@ -270,6 +296,7 @@ class EditPlan(BaseModel):
 class JobStage(str, Enum):
     QUEUED = "queued"
     ANALYZING = "analyzing"
+    ANIMATING = "animating"
     PLANNING = "planning"
     TTS = "tts"
     STICKERS = "stickers"
@@ -303,7 +330,9 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
     prompt: str = ""
     youtube_url: Optional[str] = None
+    theme: str = "normal"
     clips: List[ClipInfo] = Field(default_factory=list)
+    analysis: List[Dict[str, Any]] = Field(default_factory=list)
     plan: Optional[EditPlan] = None
     output_filename: Optional[str] = None
     output_size_bytes: Optional[int] = None
@@ -339,6 +368,30 @@ class TtsRequest(BaseModel):
 class StickerRequest(BaseModel):
     prompt: str
     remove_background: bool = True
+
+
+class ThemeInfo(BaseModel):
+    key: str
+    name: str
+    description: str
+    default_cut: str
+    shake: str
+
+
+class TextToVideoRequest(BaseModel):
+    prompt: str
+    seconds: float = 5.0
+    resolution: str = "720x1280"
+    negative_prompt: str = ""
+    seed: Optional[int] = None
+
+
+class ImageToVideoRequest(BaseModel):
+    prompt: str = ""
+    seconds: float = 5.0
+    motion_strength: float = 0.7
+    negative_prompt: str = ""
+    seed: Optional[int] = None
 
 
 class HealthResponse(BaseModel):

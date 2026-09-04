@@ -34,8 +34,10 @@ from puter_integration import (
     build_mask,
     extract_frames,
     ffmpeg_binary,
-    procedural_sticker,
 )
+from sticker_art import draw_sticker
+from themes import Theme, resolve_theme
+from vfx import apply_frame_effect, build_effect_chain
 from schemas import (
     EditPlan,
     JobStage,
@@ -445,7 +447,11 @@ class VideoRenderer:
         workspace: Path,
         puter: Optional[PuterClient] = None,
         progress: Optional[ProgressCallback] = None,
+        theme: Optional[str] = None,
+        analyses: Optional[Sequence[Any]] = None,
     ) -> None:
+        self.theme: Theme = resolve_theme(theme)
+        self.analyses = list(analyses or [])
         self.plan = plan
         self.clip_paths = [Path(path) for path in clip_paths]
         self.workspace = Path(workspace)
@@ -459,6 +465,11 @@ class VideoRenderer:
         self.assets_dir = self.workspace / "assets"
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self._open_clips: List[Any] = []
+
+        # The theme drives caption colours and sticker animation unless the
+        # plan asked for something specific.
+        if self.plan.captions.highlight_color in ("", "#FFD400"):
+            self.plan.captions.highlight_color = self.theme.caption_highlight
 
     # ------------------------------------------------------------- plumbing
     def report(self, stage: JobStage, progress: float, message: str) -> None:
@@ -531,8 +542,8 @@ class VideoRenderer:
         have_puter = self.puter is not None and self.puter.is_configured
         if not have_puter:
             self.warn(
-                "Puter.js key missing - the AI stickers were replaced with locally "
-                "rendered motion-graphic badges."
+                "Puter.js key missing - the AI stickers were drawn locally as vector "
+                "icons (sword / explosion / bolt / skull ...) instead."
             )
 
         results: Dict[int, Path] = {}
@@ -552,10 +563,10 @@ class VideoRenderer:
                 except Exception as exc:
                     self.warn(
                         f"Puter sticker '{sticker.generate_prompt[:40]}' failed ({exc}) - "
-                        "used a motion-graphic badge instead."
+                        "drew a vector icon instead."
                     )
             try:
-                procedural_sticker(sticker.generate_prompt, destination)
+                draw_sticker(sticker.generate_prompt, destination)
                 results[index] = destination
             except Exception as exc:
                 self.warn(f"Sticker '{sticker.generate_prompt[:40]}' could not be drawn: {exc}")
@@ -844,6 +855,7 @@ class VideoRenderer:
         composite = CompositeVideoClip(layers, size=(self.width, self.height))
         composite = _with_duration(composite, duration)
         composite = _with_fps(composite, self.fps)
+        composite = self._apply_theme_look(composite, duration)
         if audio_clip is not None:
             composite = _with_audio(composite, audio_clip)
         self._track(composite)
@@ -852,6 +864,60 @@ class VideoRenderer:
         self._write_video(composite, output_path, with_audio=True)
         self.report(JobStage.ENCODING, 0.98, "Encode finished")
         return output_path
+
+    def _theme_hits(self, duration: float) -> List[float]:
+        """Timestamps in OUTPUT time where the theme should kick.
+
+        ``impacts`` fires on every cut - which is what an anime edit does -
+        while ``beats`` remaps the source-clip beat onsets of each segment into
+        the re-cut timeline.
+        """
+        mode = self.theme.shake_on
+        offsets = self._segment_offsets()
+        if mode == "impacts":
+            return [start for start, _length in offsets if 0.05 < start < duration]
+
+        if mode == "beats":
+            beats_by_clip: Dict[int, List[float]] = {}
+            for index, analysis in enumerate(self.analyses):
+                beats_by_clip[index] = list(getattr(analysis, "beats", None) or [])
+            if not any(beats_by_clip.values()):
+                return [start for start, _length in offsets if 0.05 < start < duration]
+
+            hits: List[float] = []
+            for position, segment in enumerate(self.plan.edit_timeline):
+                if position >= len(offsets):
+                    break
+                start_out, length = offsets[position]
+                source = segment.source_index or 0
+                speed = segment.speed or 1.0
+                for beat in beats_by_clip.get(source, []):
+                    if segment.start_seconds <= beat <= segment.end_seconds:
+                        mapped = start_out + (beat - segment.start_seconds) / speed
+                        if 0.05 < mapped < duration:
+                            hits.append(round(mapped, 3))
+            return sorted(hits)
+
+        return []
+
+    def _apply_theme_look(self, clip, duration: float):
+        """Grade, bloom, vignette and shake, as one per-frame pass."""
+        hits = self._theme_hits(duration)
+        shake = self.theme.shake_spec(hits, width=self.width)
+        effect = build_effect_chain(
+            shake=shake,
+            grade=self.theme.grade or None,
+            vignette_strength=self.theme.vignette,
+            bloom=self.theme.bloom,
+        )
+        if effect is None:
+            return clip
+        self.report(
+            JobStage.RENDERING, 0.78,
+            f"Applying '{self.theme.name}' look"
+            + (f" ({self.theme.shake_kind} shake on {len(hits)} hits)" if shake else ""),
+        )
+        return apply_frame_effect(clip, effect)
 
     def _extend_to(self, clip, target_duration: float):
         """Hold the last frame so a long voiceover is never cut off."""
@@ -944,7 +1010,8 @@ class VideoRenderer:
             self.warn(f"Could not load sticker {path.name}: {exc}")
             return None
 
-        target_width = int(self.width * settings.sticker_max_width_ratio * max(sticker.scale, 0.2))
+        scale = max(sticker.scale, 0.2) * self.theme.sticker_scale
+        target_width = int(self.width * settings.sticker_max_width_ratio * scale)
         target_width = max(120, min(target_width, self.width))
         ratio = target_width / rgba.shape[1]
         target_height = max(60, int(rgba.shape[0] * ratio))
@@ -954,7 +1021,8 @@ class VideoRenderer:
         clip = _with_duration(clip, duration)
         clip = _with_start(clip, start)
         clip = _with_fps(clip, self.fps)
-        return self._animate(clip, sticker.animation, sticker.position, duration,
+        animation = sticker.animation or self.theme.sticker_animation
+        return self._animate(clip, animation, sticker.position, duration,
                              (target_width, target_height))
 
     def _text_layers(self, duration: float) -> List[Any]:

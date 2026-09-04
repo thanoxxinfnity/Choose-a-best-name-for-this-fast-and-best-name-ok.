@@ -80,7 +80,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import com.aivideo.editor.ui.AIVideoEditorTheme
+import com.aivideo.editor.ui.MojaAITheme
 import java.util.Locale
 
 /**
@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            AIVideoEditorTheme {
+            MojaAITheme {
                 EditorScreen(
                     onOpenSettings = { startActivity(SettingsActivity.intent(this)) },
                     onShare = { uri -> shareVideo(uri) },
@@ -158,7 +158,7 @@ fun EditorScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("AI Video Editor")
+                        Text("Moja AI")
                         Text(
                             state.health?.let { "backend v${it.version} - 1080x1920 @ 60fps" }
                                 ?: "backend unreachable - check Settings",

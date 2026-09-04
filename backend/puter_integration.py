@@ -121,7 +121,7 @@ class PuterClient:
         headers = {
             "Accept": accept,
             "Content-Type": "application/json",
-            "User-Agent": f"ai-video-editor/{settings.app_version}",
+            "User-Agent": f"moja-ai/{settings.app_version}",
         }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -212,7 +212,7 @@ class PuterClient:
 
     # --------------------------------------------------------- media decoding
     def _download(self, url: str) -> bytes:
-        headers = {"User-Agent": f"ai-video-editor/{settings.app_version}"}
+        headers = {"User-Agent": f"moja-ai/{settings.app_version}"}
         if self.api_key and url.startswith(self.base_url):
             headers["Authorization"] = f"Bearer {self.api_key}"
         response = self.session.get(url, headers=headers, timeout=self.timeout)

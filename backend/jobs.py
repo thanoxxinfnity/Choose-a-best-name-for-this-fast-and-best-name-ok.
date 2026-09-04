@@ -22,13 +22,15 @@ from typing import Dict, List, Optional
 
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
+from themes import resolve_theme
+from video_analyzer import VideoAnalysis, analyse_video
 from puter_integration import PuterClient
 from schemas import ClipInfo, EditPlan, JobStage, JobStatus
 from video_renderer import RenderError, VideoRenderer, probe_clip
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_FILENAME = "final_1080x1920_60fps.mp4"
+OUTPUT_FILENAME = "moja_ai_final.mp4"
 
 
 @dataclass
@@ -58,6 +60,8 @@ class JobRequest:
     target_duration: Optional[float] = None
     enable_captions: bool = True
     voice_accent: str = "indian_accent"
+    theme: str = "auto"
+    enable_animation: bool = False
     max_stickers: int = 4
     max_inpaints: int = 2
     plan_override: Optional[EditPlan] = None
@@ -222,9 +226,33 @@ class JobManager:
 
             puter = PuterClient(api_key=request.credentials.resolved_puter_key())
 
-            # ------------------------------------------------- 1. reference
+            # -------------------------------------- 1. look at the footage
             self._update(job_id, stage=JobStage.ANALYZING, progress=0.02,
-                         message="Analysing clips and the YouTube reference")
+                         message="Analysing what is actually in the footage")
+            nim_key = request.credentials.resolved_nim_key()
+            analyses: List[VideoAnalysis] = []
+            for index, clip_path in enumerate(request.clip_paths):
+                self._update(
+                    job_id, progress=0.02 + 0.02 * index,
+                    message=f"Analysing clip {index + 1}/{len(request.clip_paths)}",
+                )
+                analyses.append(analyse_video(clip_path, nim_api_key=nim_key))
+            if analyses and analyses[0].vision_error:
+                self._append_warnings(job_id, [f"Vision pass: {analyses[0].vision_error}"])
+
+            theme = resolve_theme(
+                analyses[0].suggested_theme
+                if (request.theme in ("", "auto", None) and analyses)
+                else request.theme
+            )
+            self._update(
+                job_id,
+                theme=theme.key,
+                analysis=[analysis.to_dict() for analysis in analyses],
+                message=f"Footage: {analyses[0].summary if analyses else 'unknown'} "
+                        f"- theme '{theme.name}'",
+            )
+
             reference = None
             if request.youtube_url:
                 reference = fetch_youtube_reference(
@@ -242,7 +270,7 @@ class JobManager:
                 plan: EditPlan = request.plan_override
                 warnings: List[str] = []
             else:
-                orchestrator = KimiOrchestrator(api_key=request.credentials.resolved_nim_key())
+                orchestrator = KimiOrchestrator(api_key=nim_key)
                 plan, warnings = orchestrator.build_plan(
                     prompt=request.prompt,
                     clips=status.clips,
@@ -250,10 +278,16 @@ class JobManager:
                     target_duration=request.target_duration,
                     max_stickers=request.max_stickers,
                     max_inpaints=request.max_inpaints,
+                    analyses=analyses,
+                    theme=theme.prompt_hint(),
                 )
             plan.captions.enabled = plan.captions.enabled and request.enable_captions
+            plan.theme = theme.key
             if request.voice_accent:
                 plan.audio.voice_accent = request.voice_accent
+            if not request.enable_animation:
+                for segment in plan.edit_timeline:
+                    segment.puter_animate = None
 
             self._append_warnings(job_id, warnings)
             self._update(job_id, plan=plan, message=f"Timeline ready: {len(plan.edit_timeline)} segments")
@@ -275,6 +309,8 @@ class JobManager:
                 workspace=workspace,
                 puter=puter,
                 progress=on_progress,
+                theme=theme.key,
+                analyses=analyses,
             )
             output = self.output_path(job_id)
             renderer.render(output)

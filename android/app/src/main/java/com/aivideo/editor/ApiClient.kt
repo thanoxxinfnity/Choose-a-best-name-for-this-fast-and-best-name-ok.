@@ -238,12 +238,12 @@ object ApiClient {
     // ------------------------------------------------------------- download
     /**
      * Streams the finished high quality MP4 into the device gallery
-     * (`Movies/AI Video Editor/`) and returns its content [Uri].
+     * (`Movies/Moja AI/`) and returns its content [Uri].
      */
     fun downloadToGallery(
         context: Context,
         jobId: String,
-        fileName: String = "ai_edit_$jobId.mp4",
+        fileName: String = "moja_ai_$jobId.mp4",
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result<Uri> = runCatching {
         val request = Request.Builder()
@@ -264,7 +264,7 @@ object ApiClient {
                 val values = ContentValues().apply {
                     put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
                     put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                    put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/AI Video Editor")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/Moja AI")
                     put(MediaStore.Video.Media.IS_PENDING, 1)
                 }
                 val resolver = context.contentResolver
@@ -286,7 +286,7 @@ object ApiClient {
                 @Suppress("DEPRECATION")
                 val directory = File(
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
-                    "AI Video Editor",
+                    "Moja AI",
                 )
                 if (!directory.exists() && !directory.mkdirs()) {
                     throw IOException("Could not create ${directory.absolutePath}")

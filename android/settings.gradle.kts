@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AI Video Editor"
+rootProject.name = "Moja AI"
 include(":app")

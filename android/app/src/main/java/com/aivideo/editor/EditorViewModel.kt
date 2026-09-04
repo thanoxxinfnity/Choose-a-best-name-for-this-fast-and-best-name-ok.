@@ -259,7 +259,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         it.copy(
                             isDownloading = false,
                             savedUri = uri,
-                            statusMessage = "Saved to Movies/AI Video Editor",
+                            statusMessage = "Saved to Movies/Moja AI",
                         )
                     }
                 },
