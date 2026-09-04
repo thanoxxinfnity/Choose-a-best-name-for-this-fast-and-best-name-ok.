@@ -86,6 +86,8 @@ class Settings(BaseSettings):
     nim_vision_fallback_model: str = "meta/llama-3.2-11b-vision-instruct"
     analysis_frame_count: int = 4
     enable_vision_analysis: bool = True
+    # Ceiling on the whole vision pass, retries included.
+    vision_budget_seconds: int = 150
     nim_temperature: float = 0.6
     # Kimi K3 on NIM pins top_p at 0.95 and rejects anything else.
     nim_top_p: float = 0.95

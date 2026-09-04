@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import subprocess
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -47,6 +48,8 @@ MAX_INLINE_IMAGE_BYTES = 170_000
 # sheet of 448px cells costs ~84k tokens and is rejected outright.
 MAX_SHEET_PIXELS = 190_000
 CONTACT_SHEET_CELL = 224
+VISION_MAX_RETRIES = 3
+VISION_BACKOFF = (5, 15, 30)
 
 VISION_SYSTEM_PROMPT = (
     "You are a video content analyst for a short-form video editor. You are shown a "
@@ -416,36 +419,65 @@ def describe_with_vision(
     if settings.nim_vision_fallback_model not in candidates:
         candidates.append(settings.nim_vision_fallback_model)
 
-    last_error = ""
-    for candidate in candidates:
-        response = requests.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
-            json={
-                "model": candidate,
-                "messages": [
-                    {"role": "system", "content": VISION_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f'{prompt}\n<img src="data:image/jpeg;base64,{encoded}" />',
-                    },
-                ],
-                "max_tokens": 900,
-                "temperature": 0.2,
+    body = {
+        "messages": [
+            {"role": "system", "content": VISION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f'{prompt}\n<img src="data:image/jpeg;base64,{encoded}" />',
             },
-            timeout=timeout,
-        )
-        if response.status_code >= 400:
-            last_error = f"vision model {candidate} HTTP {response.status_code}: {response.text[:200]}"
-            logger.warning(last_error)
-            continue
+        ],
+        "max_tokens": 900,
+        "temperature": 0.2,
+    }
 
-        content = (response.json()["choices"][0]["message"].get("content") or "").strip()
-        from orchestrator import extract_json  # local import avoids a cycle
+    last_error = ""
+    deadline = time.monotonic() + settings.vision_budget_seconds
+    for candidate in candidates:
+        for attempt in range(1, VISION_MAX_RETRIES + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 1.0:
+                raise RuntimeError(
+                    last_error or f"vision pass ran out of its "
+                    f"{settings.vision_budget_seconds}s budget"
+                )
+            try:
+                response = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+                    json={"model": candidate, **body},
+                    timeout=min(timeout, remaining),
+                )
+            except requests.RequestException as exc:
+                last_error = f"vision model {candidate} network error: {exc}"
+                logger.warning(last_error)
+                break
 
-        payload = extract_json(content)
-        payload["_model"] = candidate
-        return payload
+            # Rate limits here are per minute and account wide, exactly as for
+            # the planning call, so back off rather than dropping the pass.
+            if response.status_code == 429:
+                delay = min(VISION_BACKOFF[min(attempt - 1, len(VISION_BACKOFF) - 1)],
+                            max(0.0, deadline - time.monotonic()))
+                last_error = f"vision model {candidate} HTTP 429"
+                if delay <= 0.5:
+                    break
+                logger.info("Vision pass rate limited, waiting %ss (attempt %s)", delay, attempt)
+                time.sleep(delay)
+                continue
+            if response.status_code >= 400:
+                last_error = (
+                    f"vision model {candidate} HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+                logger.warning(last_error)
+                break
+
+            content = (response.json()["choices"][0]["message"].get("content") or "").strip()
+            from orchestrator import extract_json  # local import avoids a cycle
+
+            payload = extract_json(content)
+            payload["_model"] = candidate
+            return payload
 
     raise RuntimeError(last_error or "no vision model answered")
 
