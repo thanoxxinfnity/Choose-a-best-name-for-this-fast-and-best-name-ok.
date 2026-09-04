@@ -32,7 +32,7 @@ the job instead of failing the render.
   "puter_configured": false,
   "nim_configured": false,
   "active_jobs": 0,
-  "details": { "output": "1080x1920 @ 60fps", "nim_model": "moonshotai/kimi-k3-instruct" }
+  "details": { "output": "1080x1920 @ 60fps", "nim_model": "moonshotai/kimi-k3" }
 }
 ```
 

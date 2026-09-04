@@ -61,12 +61,16 @@ class Settings(BaseSettings):
     # ----------------------------------------------------- nvidia nim / kimi --
     nim_base_url: str = "https://integrate.api.nvidia.com/v1"
     nim_api_key: str = ""
-    # Kimi K3 on NVIDIA NIM.  If your NIM account does not expose K3 yet, set
-    # NIM_MODEL=moonshotai/kimi-k2-instruct (or any other chat model id).
-    nim_model: str = "moonshotai/kimi-k3-instruct"
-    nim_fallback_model: str = "moonshotai/kimi-k2-instruct"
+    # Kimi K3 on NVIDIA NIM (verified against the live /v1/models catalogue).
+    # If your account does not expose K3, set NIM_MODEL to another chat model.
+    nim_model: str = "moonshotai/kimi-k3"
+    nim_fallback_model: str = "moonshotai/kimi-k2.6"
     nim_timeout: int = 120
+    # NIM enforces its limit per minute; see RATE_LIMIT_BACKOFF in orchestrator.
+    nim_max_retries: int = 5
     nim_temperature: float = 0.6
+    # Kimi K3 on NIM pins top_p at 0.95 and rejects anything else.
+    nim_top_p: float = 0.95
     nim_max_tokens: int = 4096
 
     # ------------------------------------------------------------- youtube ---

@@ -31,6 +31,11 @@ segment windows are pushed inside the real clip durations, `source_index` is
 repaired, segments shorter than 0.8 s or longer than 8 s are fixed, and the
 sticker/inpaint budgets are enforced.
 
+NIM pins some sampling parameters per model (Kimi K3 requires `top_p=0.95`); a
+400 naming the required value is parsed and the request retried. HTTP 429 is
+account-wide and per minute, so it backs off 5s / 15s / 30s / 60s (or
+`Retry-After`) against the same model rather than switching ids.
+
 If NIM is unreachable, the model id is not enabled on the account, or the answer
 cannot be parsed, `build_fallback_plan` produces a deterministic fast-cut
 timeline instead and the reason is recorded as a job warning.
@@ -96,6 +101,13 @@ For each `puter_sticker`:
 3. the alpha channel is trimmed to the subject's bounding box with 8 px padding,
 4. the result is saved as a transparent PNG in the job's `assets/` directory.
 
+Without a Puter key (or when a txt2img call fails) `procedural_sticker` draws a
+glowing glassmorphic badge locally instead: the prompt is condensed to a two
+word label, the palette is picked from its keywords (gold / green / blue / moon
+/ fire / pink), and the pill gets a gradient body, a masked glass sheen and a
+blurred outer glow. The timeline keeps its motion graphics and the substitution
+is reported as a job warning.
+
 ## 5. Inpainting (`inpainting`) - OpenCV + Puter image-to-image
 
 For each segment with `puter_inpaint.active`:
@@ -158,7 +170,7 @@ preview start instantly over the Range-enabled `/stream` endpoint.
 | Missing | Effect |
 |---|---|
 | NVIDIA NIM key / model | deterministic fallback editor, job warning |
-| Puter key | no TTS, no stickers, no inpainting - the cut still renders |
+| Puter key | no TTS, no inpainting; AI stickers become procedural motion-graphic badges |
 | Puter call fails mid-render | that asset is skipped, job warning |
 | faster-whisper / model | no captions, job warning |
 | ffprobe | OpenCV + `ffmpeg -i` fallback probe |

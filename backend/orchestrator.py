@@ -104,9 +104,48 @@ _YOUTUBE_ID_RE = re.compile(r"(?:v=|/shorts/|/embed/|youtu\.be/|/v/)([A-Za-z0-9_
 
 WORDS_PER_SECOND = 2.6  # comfortable Indian English narration pace
 
+# NIM rate limits are enforced per minute, so short exponential backoff never
+# clears them; these waits (seconds) do.
+RATE_LIMIT_BACKOFF = (5, 15, 30, 60, 60)
+
+
+_PINNED_PARAM_RE = re.compile(
+    r"`?(?P<name>[a-z_]+)`?\s+is immutable[^.]*?must be\s+(?P<value>-?\d+(?:\.\d+)?)",
+    re.I,
+)
+
+
+def _pinned_parameter(body: str) -> Optional[tuple[str, float]]:
+    """Extract a sampling parameter NIM refuses to let us change."""
+    match = _PINNED_PARAM_RE.search(body or "")
+    if not match:
+        return None
+    try:
+        return match.group("name"), float(match.group("value"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_after_seconds(response: requests.Response) -> Optional[float]:
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(1.0, min(float(raw), 120.0))
+    except (TypeError, ValueError):
+        return None
+
 
 class OrchestratorError(RuntimeError):
     """Raised when the plan cannot be produced at all."""
+
+
+class NimRateLimited(OrchestratorError):
+    """NIM kept answering 429 - the account's request budget is exhausted.
+
+    This is explicitly *not* a reason to fall back to another model id: the
+    same limit applies there, and a second model burns another request.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +278,14 @@ class KimiOrchestrator:
         model: Optional[str] = None,
         timeout: Optional[int] = None,
         session: Optional[requests.Session] = None,
+        max_retries: Optional[int] = None,
     ) -> None:
         self.api_key = (api_key or settings.nim_api_key or "").strip()
         self.base_url = (base_url or settings.nim_base_url).rstrip("/")
         self.model = model or settings.nim_model
         self.timeout = timeout or settings.nim_timeout
         self.session = session or requests.Session()
+        self.max_retries = max(1, max_retries or settings.nim_max_retries)
 
     @property
     def is_configured(self) -> bool:
@@ -283,6 +324,11 @@ class KimiOrchestrator:
                 if model != self.model:
                     warnings.append(f"Kimi model '{self.model}' unavailable - used '{model}'.")
                     self.model = model
+                break
+            except NimRateLimited as exc:
+                # A second model id would hit the same account-wide limit.
+                logger.warning("NIM rate limited on %s: %s", model, exc)
+                warnings.append(str(exc))
                 break
             except OrchestratorError as exc:
                 logger.warning("NIM model %s failed: %s", model, exc)
@@ -323,7 +369,7 @@ class KimiOrchestrator:
                 {"role": "user", "content": user_message},
             ],
             "temperature": settings.nim_temperature,
-            "top_p": 0.9,
+            "top_p": settings.nim_top_p,
             "max_tokens": settings.nim_max_tokens,
             "stream": False,
             "response_format": {"type": "json_object"},
@@ -335,7 +381,8 @@ class KimiOrchestrator:
         }
 
         last_error: Optional[str] = None
-        for attempt in range(1, 4):
+        rate_limited = False
+        for attempt in range(1, self.max_retries + 1):
             try:
                 response = self.session.post(url, headers=headers, json=payload, timeout=self.timeout)
             except requests.RequestException as exc:
@@ -347,7 +394,26 @@ class KimiOrchestrator:
                 # Older NIM deployments reject the JSON mode flag.
                 payload.pop("response_format", None)
                 continue
-            if response.status_code in (429, 500, 502, 503, 504):
+            if response.status_code == 400:
+                # e.g. "`top_p` is immutable for this model and must be 0.95".
+                pinned = _pinned_parameter(response.text)
+                if pinned and payload.get(pinned[0]) != pinned[1]:
+                    logger.info("NIM pins %s=%s for %s, retrying", pinned[0], pinned[1], model)
+                    payload[pinned[0]] = pinned[1]
+                    continue
+            if response.status_code == 429:
+                rate_limited = True
+                last_error = f"HTTP 429: {response.text[:200]}"
+                delay = _retry_after_seconds(response) or RATE_LIMIT_BACKOFF[
+                    min(attempt - 1, len(RATE_LIMIT_BACKOFF) - 1)
+                ]
+                logger.info(
+                    "NIM rate limited on %s, waiting %ss (attempt %s/%s)",
+                    model, delay, attempt, self.max_retries,
+                )
+                time.sleep(delay)
+                continue
+            if response.status_code in (500, 502, 503, 504):
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
                 time.sleep(min(2 ** attempt, 8))
                 continue
@@ -366,6 +432,11 @@ class KimiOrchestrator:
                 raise OrchestratorError("NVIDIA NIM returned an empty message.")
             return content
 
+        if rate_limited:
+            raise NimRateLimited(
+                "NVIDIA NIM is rate limiting this API key (HTTP 429). Wait a minute "
+                "and retry, or use an account with a higher request budget."
+            )
         raise OrchestratorError(f"NVIDIA NIM unreachable: {last_error}")
 
     @staticmethod

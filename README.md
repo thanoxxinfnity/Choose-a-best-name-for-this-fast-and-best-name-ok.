@@ -157,20 +157,31 @@ enforced by `schemas.EditPlan`.
 
 ## Notes and assumptions
 
-* **Kimi K3 model id.** `NIM_MODEL` defaults to `moonshotai/kimi-k3-instruct`. If
-  your NVIDIA NIM account does not expose that id yet, the orchestrator
-  automatically retries with `NIM_FALLBACK_MODEL`
-  (`moonshotai/kimi-k2-instruct`) and records a warning on the job.
+* **Kimi K3 model id.** `NIM_MODEL` defaults to `moonshotai/kimi-k3`, verified
+  against the live `GET /v1/models` catalogue. NIM pins `top_p` at `0.95` for
+  this model and rejects any other value; the client reads the required value
+  out of the 400 response and retries automatically, so other pinned
+  parameters are handled too. If the id is not enabled on your account the
+  orchestrator retries with `NIM_FALLBACK_MODEL` and records a job warning.
+* **NIM rate limits are per minute.** On HTTP 429 the client waits
+  5s / 15s / 30s / 60s (or the `Retry-After` value) and retries the *same*
+  model - switching model ids would just burn another request against the same
+  account-wide budget.
 * **Puter driver ids.** Puter routes every AI capability through
   `POST /drivers/call` with an `interface` / `driver` / `method` triple. The
   defaults (`puter-tts` + `aws-polly`, `puter-image-generation` +
   `openai-image-generation`) are configurable in `config.py` / `.env`, and the
   response decoder accepts raw bytes, `data:` URIs, base64 and URLs so a change
   in Puter's envelope shape does not break the pipeline.
-* **Graceful degradation.** A missing Puter key skips TTS/stickers/inpainting, a
-  missing NIM key uses the deterministic editor, and a missing Whisper model
-  skips captions. Every skip is reported back to the app as a job warning
+* **Graceful degradation.** A missing NIM key uses the deterministic editor; a
+  missing Puter key skips the TTS and inpainting and swaps the AI stickers for
+  locally rendered glowing motion-graphic badges (`procedural_sticker`), so the
+  timeline still carries the graphics Kimi asked for; a missing Whisper model
+  skips captions. Every substitution is reported to the app as a job warning
   instead of failing the render.
+* **Puter.js needs a token.** `POST /drivers/call` answers
+  `401 {"code": "token_missing"}` without one - there is no anonymous tier, so
+  TTS, AI stickers and inpainting all require `X-Puter-Key`.
 * Inpainting is sampled (`INPAINT_FPS`, default 2 fps, max 24 frames per
   segment) and blended back with a feathered mask - a full 60 fps round trip
   through an image API would be prohibitively slow and expensive.

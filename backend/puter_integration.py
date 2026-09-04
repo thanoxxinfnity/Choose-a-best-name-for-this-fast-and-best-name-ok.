@@ -784,6 +784,171 @@ def _chunk_text(text: str, limit: int) -> List[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+# ---------------------------------------------------------------------------
+# Procedural sticker fallback (no Puter key required)
+# ---------------------------------------------------------------------------
+
+_STICKER_FILLERS = {
+    "a", "an", "and", "the", "with", "of", "in", "on", "at", "3d", "glowing",
+    "glossy", "soft", "light", "lights", "shiny", "sparkling", "serene", "warm",
+    "cartoon", "sticker", "icon", "style", "effect", "neon", "bright", "cute",
+    "beautiful", "aesthetic", "premium", "modern", "clean", "small", "big",
+}
+
+_STICKER_PALETTE = {
+    "gold": ((255, 196, 60), (255, 138, 30)),
+    "green": ((124, 226, 130), (34, 160, 96)),
+    "blue": ((122, 190, 255), (44, 110, 230)),
+    "moon": ((168, 168, 255), (86, 76, 200)),
+    "fire": ((255, 150, 70), (232, 58, 40)),
+    "pink": ((255, 150, 200), (214, 51, 132)),
+    "violet": ((186, 150, 255), (109, 40, 217)),
+}
+
+_STICKER_COLOUR_HINTS = (
+    (("gold", "golden", "sun", "amber", "honey"), "gold"),
+    (("leaf", "green", "forest", "plant", "tree", "nature"), "green"),
+    (("water", "ocean", "sea", "rain", "sky", "blue", "wave"), "blue"),
+    (("moon", "night", "star", "dream", "calm"), "moon"),
+    (("fire", "flame", "hot", "explosion", "energy"), "fire"),
+    (("flower", "lotus", "rose", "butterfly", "bloom", "love"), "pink"),
+)
+
+
+def sticker_label(prompt: str, max_words: int = 2) -> str:
+    """Condense a sticker prompt into a short badge label."""
+    words = [
+        word.strip(".,!?:;\"'()").upper()
+        for word in (prompt or "").split()
+        if word.strip(".,!?:;\"'()").lower() not in _STICKER_FILLERS
+        and word.strip(".,!?:;\"'()").isalpha()
+    ]
+    if not words:
+        return "HIGHLIGHT"
+    return " ".join(words[:max_words])
+
+
+def _sticker_colours(prompt: str) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+    lowered = (prompt or "").lower()
+    for keywords, name in _STICKER_COLOUR_HINTS:
+        if any(keyword in lowered for keyword in keywords):
+            return _STICKER_PALETTE[name]
+    return _STICKER_PALETTE["violet"]
+
+
+def procedural_sticker(prompt: str, output_path: Path, width: int = 760) -> Path:
+    """Render a glowing motion-graphic badge locally.
+
+    Used when no Puter.js key is available (or a txt2img call fails) so the
+    timeline still carries the motion graphics Kimi asked for, instead of
+    silently dropping them.  It is a stand-in, never a replacement for the real
+    AI sticker.
+    """
+    from PIL import ImageDraw, ImageFilter, ImageFont
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    label = sticker_label(prompt)
+    top_colour, bottom_colour = _sticker_colours(prompt)
+
+    pad_x, pad_y = int(width * 0.10), int(width * 0.075)
+    probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+
+    # Shrink the label until the pill can actually contain it.
+    font_size = int(width * 0.115)
+    while True:
+        font = _sticker_font(font_size)
+        text_box = probe.textbbox((0, 0), label, font=font)
+        text_w, text_h = text_box[2] - text_box[0], text_box[3] - text_box[1]
+        if text_w + pad_x * 2 <= width or font_size <= int(width * 0.055):
+            break
+        font_size -= 2
+    pill_w = min(max(text_w + pad_x * 2, int(width * 0.55)), width)
+    pill_h = text_h + pad_y * 2
+    margin = int(width * 0.09)  # room for the glow
+    canvas = Image.new("RGBA", (pill_w + margin * 2, pill_h + margin * 2), (0, 0, 0, 0))
+
+    # Vertical gradient body.
+    gradient = Image.new("RGBA", (pill_w, pill_h))
+    for y in range(pill_h):
+        blend = y / max(pill_h - 1, 1)
+        gradient.paste(
+            tuple(
+                int(top_colour[channel] * (1 - blend) + bottom_colour[channel] * blend)
+                for channel in range(3)
+            ) + (255,),
+            (0, y, pill_w, y + 1),
+        )
+    rounded = Image.new("L", (pill_w, pill_h), 0)
+    ImageDraw.Draw(rounded).rounded_rectangle(
+        [0, 0, pill_w - 1, pill_h - 1], radius=pill_h // 2, fill=255
+    )
+    gradient.putalpha(rounded)
+
+    # Outer glow.
+    glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    glow.paste(gradient, (margin, margin), gradient)
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=margin * 0.55))
+    canvas.alpha_composite(glow)
+    canvas.alpha_composite(glow)
+    canvas.paste(gradient, (margin, margin), gradient)
+
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(
+        [margin, margin, margin + pill_w - 1, margin + pill_h - 1],
+        radius=pill_h // 2, outline=(255, 255, 255, 210), width=max(3, pill_h // 26),
+    )
+    # Glass highlight across the top half. ImageDraw replaces pixels rather
+    # than blending them, so the translucent sheen goes on its own layer.
+    sheen = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(sheen).rounded_rectangle(
+        [margin + pill_h // 6, margin + pill_h // 8,
+         margin + pill_w - pill_h // 6, margin + pill_h // 2],
+        radius=pill_h // 3, fill=(255, 255, 255, 58),
+    )
+    sheen.putalpha(Image.composite(sheen.split()[-1], Image.new("L", canvas.size, 0), _pill_mask(canvas.size, margin, pill_w, pill_h)))
+    canvas.alpha_composite(sheen)
+    text_x = margin + (pill_w - text_w) // 2 - text_box[0]
+    text_y = margin + (pill_h - text_h) // 2 - text_box[1]
+    draw.text((text_x, text_y + 2), label, font=font, fill=(0, 0, 0, 110))
+    draw.text((text_x, text_y), label, font=font, fill=(255, 255, 255, 255))
+
+    canvas.save(output_path, "PNG")
+    return output_path
+
+
+def _pill_mask(size: Tuple[int, int], margin: int, pill_w: int, pill_h: int):
+    """Mask limiting the sheen to the pill body."""
+    from PIL import ImageDraw as _ImageDraw
+
+    mask = Image.new("L", size, 0)
+    _ImageDraw.Draw(mask).rounded_rectangle(
+        [margin, margin, margin + pill_w - 1, margin + pill_h - 1],
+        radius=pill_h // 2, fill=255,
+    )
+    return mask
+
+
+def _sticker_font(size: int):
+    from PIL import ImageFont
+
+    candidates = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+    )
+    for path in candidates:
+        if Path(path).exists():
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+
 def cache_key(*parts: Any) -> str:
     digest = hashlib.sha1("::".join(str(part) for part in parts).encode("utf-8"))
     return digest.hexdigest()[:16]

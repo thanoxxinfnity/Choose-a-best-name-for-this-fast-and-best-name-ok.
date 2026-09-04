@@ -34,6 +34,7 @@ from puter_integration import (
     build_mask,
     extract_frames,
     ffmpeg_binary,
+    procedural_sticker,
 )
 from schemas import (
     EditPlan,
@@ -526,23 +527,38 @@ class VideoRenderer:
         ]
         if not requests_:
             return {}
-        if self.puter is None or not self.puter.is_configured:
-            self.warn("Puter.js key missing - AI stickers were skipped.")
-            return {}
+
+        have_puter = self.puter is not None and self.puter.is_configured
+        if not have_puter:
+            self.warn(
+                "Puter.js key missing - the AI stickers were replaced with locally "
+                "rendered motion-graphic badges."
+            )
 
         results: Dict[int, Path] = {}
         for order, (index, sticker) in enumerate(requests_):
             self.report(
                 JobStage.STICKERS,
                 0.10 + 0.10 * (order / max(len(requests_), 1)),
-                f"Generating sticker {order + 1}/{len(requests_)}: {sticker.generate_prompt[:48]}",
+                f"{'Generating' if have_puter else 'Drawing'} sticker "
+                f"{order + 1}/{len(requests_)}: {sticker.generate_prompt[:48]}",
             )
             destination = self.assets_dir / f"sticker_{index:03d}.png"
+            if have_puter:
+                try:
+                    self.puter.generate_sticker(sticker.generate_prompt, destination)
+                    results[index] = destination
+                    continue
+                except Exception as exc:
+                    self.warn(
+                        f"Puter sticker '{sticker.generate_prompt[:40]}' failed ({exc}) - "
+                        "used a motion-graphic badge instead."
+                    )
             try:
-                self.puter.generate_sticker(sticker.generate_prompt, destination)
+                procedural_sticker(sticker.generate_prompt, destination)
                 results[index] = destination
             except Exception as exc:
-                self.warn(f"Sticker '{sticker.generate_prompt[:40]}' failed: {exc}")
+                self.warn(f"Sticker '{sticker.generate_prompt[:40]}' could not be drawn: {exc}")
         return results
 
     # --------------------------------------------------------- base timeline
