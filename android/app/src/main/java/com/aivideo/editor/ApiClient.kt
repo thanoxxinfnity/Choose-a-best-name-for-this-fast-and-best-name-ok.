@@ -57,6 +57,24 @@ data class ClipInfoDto(
 )
 
 @Serializable
+data class ThemeDto(
+    val key: String,
+    val name: String,
+    val description: String = "",
+    @SerialName("default_cut") val defaultCut: String = "",
+    val shake: String = "",
+)
+
+@Serializable
+data class VoiceDto(
+    val key: String,
+    val label: String,
+    @SerialName("voice_id") val voiceId: String = "",
+    val language: String = "",
+    val deep: Boolean = false,
+)
+
+@Serializable
 data class JobCreatedDto(
     @SerialName("job_id") val jobId: String,
     val stage: String = "queued",
@@ -165,6 +183,11 @@ object ApiClient {
         voiceAccent: String,
         maxStickers: Int = 4,
         maxInpaints: Int = 2,
+        theme: String = "auto",
+        enableAnimation: Boolean = false,
+        maxAnimations: Int = 1,
+        enableIntro: Boolean = false,
+        enableOutro: Boolean = false,
         onProgress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result<JobCreatedDto> = runCatching {
         require(clips.isNotEmpty()) { "Select at least one video clip." }
@@ -181,6 +204,11 @@ object ApiClient {
             addFormDataPart("voice_accent", voiceAccent)
             addFormDataPart("max_stickers", maxStickers.toString())
             addFormDataPart("max_inpaints", maxInpaints.toString())
+            addFormDataPart("theme", theme)
+            addFormDataPart("enable_animation", enableAnimation.toString())
+            addFormDataPart("max_animations", maxAnimations.toString())
+            addFormDataPart("enable_intro", enableIntro.toString())
+            addFormDataPart("enable_outro", enableOutro.toString())
 
             clips.forEach { clip ->
                 val body = UriRequestBody(
@@ -206,6 +234,30 @@ object ApiClient {
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw IOException(errorMessage(response, body))
             json.decodeFromString(JobCreatedDto.serializer(), body)
+        }
+    }
+
+    /** Editing modes the backend actually implements. */
+    fun listThemes(context: Context): Result<List<ThemeDto>> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/themes")
+            .headers(authHeaders(context)).get().build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(ThemeDto.serializer()), body)
+        }
+    }
+
+    /** Voice profiles, including the deep/dark mysterious narrator. */
+    fun listVoices(context: Context): Result<List<VoiceDto>> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/voices")
+            .headers(authHeaders(context)).get().build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(VoiceDto.serializer()), body)
         }
     }
 

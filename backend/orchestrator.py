@@ -93,7 +93,11 @@ PLAN_CONSTRAINTS = """
 - Allowed sticker "animation": pop_up, fade_in, slide_up, slide_down, zoom_out, shake, none.
 - Use at most {max_stickers} stickers and at most {max_inpaints} inpainted segments in the whole timeline (they are expensive).
 - Omit "puter_sticker" / "puter_inpaint" entirely on segments that do not need them.
-- "tts_script" must be natural Indian English / Hinglish and readable in about {tts_seconds} seconds ({tts_words} words maximum).
+- AUDIO: set "audio.use_puter_tts" true when narration helps. Choose "audio.voice_accent" from: indian_accent, indian_accent_male, hinglish, deep_dark (deep dark mysterious narrator), deep_dark_female, horror_whisper, hype.
+- Prefer "audio.tts_lines" over a single "tts_script": a list of {{"text": "...", "start_time": "00:00:02.500", "voice": "deep_dark"}} pinned to moments in the FINAL edit, so each line lands on the beat it belongs to. Give each line 2-6 seconds of room and never overlap two lines. "voice" is optional and overrides the default for that line.
+- Any "tts_script" you emit instead must be natural Indian English / Hinglish and readable in about {tts_seconds} seconds ({tts_words} words maximum).
+- INTRO / OUTRO: you may set "intro" and "outro" to {{"active": true, "prompt": "...", "seconds": 2-4, "mode": "i2v" or "t2v", "text": "SHORT TITLE"}}. "i2v" animates a real frame of this footage (use it to stay on-style); "t2v" invents a shot from the prompt alone.
+- KEYFRAME ANIMATION: on at most {max_animations} segment(s) you may add "puter_animate": {{"active": true, "prompt": "what should move", "story_context": "what is happening around it", "keyframe_time": <seconds inside the source clip>, "second_keyframe_time": <optional>, "seconds": 2-4, "mode": "insert" or "replace"}}. Use it on the most dramatic moment, not on filler.
 - You may add an optional "text_overlay": {{"text": "...", "position": "...", "animation": "...", "style": "3d_pop"}} per segment.
 - The total timeline should be close to {target_duration} seconds.
 - Output raw JSON only. No markdown fences, no commentary.
@@ -302,6 +306,7 @@ class KimiOrchestrator:
         max_inpaints: int = 2,
         analyses: Optional[Sequence[Any]] = None,
         theme: Optional[str] = None,
+        max_animations: int = 0,
     ) -> tuple[EditPlan, List[str]]:
         """Return ``(plan, warnings)``; never raises for recoverable failures."""
         warnings: List[str] = []
@@ -317,7 +322,7 @@ class KimiOrchestrator:
 
         user_message = self._compose_user_message(
             prompt, clips, youtube_reference, target, max_stickers, max_inpaints,
-            analyses=analyses, theme=theme,
+            analyses=analyses, theme=theme, max_animations=max_animations,
         )
 
         raw: Optional[str] = None
@@ -356,7 +361,9 @@ class KimiOrchestrator:
             warnings.append(f"Kimi returned an unusable timeline ({exc}) - used the deterministic editor.")
             return build_fallback_plan(prompt, clips, youtube_reference, target, analyses), warnings
 
-        plan, sanitise_warnings = sanitise_plan(plan, clips, max_stickers, max_inpaints)
+        plan, sanitise_warnings = sanitise_plan(
+            plan, clips, max_stickers, max_inpaints, max_animations
+        )
         warnings.extend(sanitise_warnings)
         if not plan.edit_timeline:
             warnings.append("Kimi produced an empty timeline - used the deterministic editor.")
@@ -475,6 +482,7 @@ class KimiOrchestrator:
         max_inpaints: int,
         analyses: Optional[Sequence[Any]] = None,
         theme: Optional[str] = None,
+        max_animations: int = 0,
     ) -> str:
         clip_lines = [
             f"  [{index}] {clip.filename} - {clip.duration:.2f}s, "
@@ -518,6 +526,7 @@ class KimiOrchestrator:
             PLAN_CONSTRAINTS.format(
                 max_stickers=max_stickers,
                 max_inpaints=max_inpaints,
+                max_animations=max_animations,
                 target_duration=int(target_duration),
                 tts_seconds=int(tts_seconds),
                 tts_words=int(tts_seconds * WORDS_PER_SECOND),
@@ -578,6 +587,7 @@ def sanitise_plan(
     clips: Sequence[ClipInfo],
     max_stickers: int = 4,
     max_inpaints: int = 2,
+    max_animations: int = 0,
 ) -> tuple[EditPlan, List[str]]:
     """Clamp an LLM plan to something the renderer can actually execute."""
     warnings: List[str] = []
@@ -590,6 +600,7 @@ def sanitise_plan(
     cleaned: List[TimelineSegment] = []
     sticker_count = 0
     inpaint_count = 0
+    animation_count = 0
 
     for position, segment in enumerate(plan.edit_timeline):
         index = segment.source_index if segment.source_index is not None else position % len(clips)
@@ -632,13 +643,52 @@ def sanitise_plan(
                 inpaint_count += 1
         if segment.text_overlay is not None and not segment.text_overlay.active:
             segment.text_overlay = None
+        if segment.puter_animate is not None:
+            if not segment.puter_animate.is_enabled or animation_count >= max_animations:
+                segment.puter_animate = None
+            else:
+                animation_count += 1
+                animate = segment.puter_animate
+                animate.seconds = min(max(animate.seconds, 1.0), 6.0)
+                if animate.mode not in ("insert", "replace"):
+                    animate.mode = "insert"
+                for attribute in ("keyframe_time", "second_keyframe_time"):
+                    stamp = getattr(animate, attribute)
+                    if stamp is not None and not 0.0 <= stamp <= clip.duration:
+                        setattr(animate, attribute, None)
 
         cleaned.append(segment)
 
     plan.edit_timeline = cleaned
-    if plan.audio.use_puter_tts and not plan.audio.tts_script.strip():
+
+    # Voice lines must land inside the edit and must not stack on each other.
+    total = sum(segment.duration / (segment.speed or 1.0) for segment in cleaned)
+    lines = sorted(plan.audio.timed_lines, key=lambda line: line.start_seconds)
+    kept: List[Any] = []
+    previous_end = 0.0
+    for line in lines:
+        start = max(line.start_seconds, previous_end)
+        if total and start >= total:
+            warnings.append(f"Dropped voice line past the end of the edit: {line.text[:40]}")
+            continue
+        line.start_time = format_timecode(start)
+        # A rough read-back estimate keeps the next line from overlapping.
+        previous_end = start + max(1.2, len(line.text.split()) / WORDS_PER_SECOND)
+        kept.append(line)
+    plan.audio.tts_lines = kept
+
+    if plan.audio.use_puter_tts and not (plan.audio.tts_script.strip() or kept):
         plan.audio.use_puter_tts = False
         warnings.append("TTS requested without a script - voiceover disabled.")
+
+    for spec, name in ((plan.intro, "intro"), (plan.outro, "outro")):
+        if spec.active:
+            spec.seconds = min(max(spec.seconds, 1.0), 8.0)
+            if spec.mode not in ("i2v", "t2v"):
+                spec.mode = "i2v"
+            if not spec.is_enabled:
+                spec.active = False
+                warnings.append(f"Dropped an empty {name} sequence.")
     return plan, warnings
 
 

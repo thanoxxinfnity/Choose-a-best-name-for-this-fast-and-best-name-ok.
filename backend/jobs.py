@@ -62,6 +62,9 @@ class JobRequest:
     voice_accent: str = "indian_accent"
     theme: str = "auto"
     enable_animation: bool = False
+    max_animations: int = 1
+    enable_intro: bool = False
+    enable_outro: bool = False
     max_stickers: int = 4
     max_inpaints: int = 2
     plan_override: Optional[EditPlan] = None
@@ -279,6 +282,7 @@ class JobManager:
                     max_inpaints=request.max_inpaints,
                     analyses=analyses,
                     theme=theme.prompt_hint(),
+                    max_animations=request.max_animations if request.enable_animation else 0,
                 )
             plan.captions.enabled = plan.captions.enabled and request.enable_captions
             plan.theme = theme.key
@@ -287,6 +291,10 @@ class JobManager:
             if not request.enable_animation:
                 for segment in plan.edit_timeline:
                     segment.puter_animate = None
+            if not request.enable_intro:
+                plan.intro.active = False
+            if not request.enable_outro:
+                plan.outro.active = False
 
             self._append_warnings(job_id, warnings)
             self._update(job_id, plan=plan, message=f"Timeline ready: {len(plan.edit_timeline)} segments")

@@ -67,8 +67,10 @@ from schemas import (
     TextToVideoRequest,
     ThemeInfo,
     TtsRequest,
+    VoiceInfo,
 )
 from themes import THEMES, resolve_theme
+from voices import VOICE_PROFILES, resolve_voice
 from video_analyzer import analyse_video
 from video_renderer import probe_clip, whisper_available
 
@@ -170,6 +172,7 @@ def health() -> HealthResponse:
             "t2v_model": TEXT_TO_VIDEO_MODEL,
             "i2v_model": IMAGE_TO_VIDEO_MODEL,
             "themes": list(THEMES),
+            "voices": list(VOICE_PROFILES),
             "max_upload_mb": settings.max_upload_mb,
         },
     )
@@ -192,6 +195,9 @@ async def create_render_job(
     max_inpaints: int = Form(default=2),
     theme: str = Form(default="auto"),
     enable_animation: bool = Form(default=False),
+    max_animations: int = Form(default=1),
+    enable_intro: bool = Form(default=False),
+    enable_outro: bool = Form(default=False),
     credentials: JobCredentials = Depends(get_credentials),
 ) -> JobCreatedResponse:
     if not videos:
@@ -249,6 +255,9 @@ async def create_render_job(
             max_inpaints=max(0, min(int(max_inpaints), 6)),
             theme=theme,
             enable_animation=enable_animation,
+            max_animations=max(0, min(int(max_animations), 4)),
+            enable_intro=enable_intro,
+            enable_outro=enable_outro,
         )
     )
     return JobCreatedResponse(
@@ -412,12 +421,16 @@ def puter_tts(
     credentials: JobCredentials = Depends(get_credentials),
 ):
     client = PuterClient(api_key=credentials.resolved_puter_key())
+    profile = resolve_voice(payload.accent)
     destination = Path(tempfile.mkdtemp(prefix="tts-", dir=settings.cache_dir)) / "voice.mp3"
     try:
         client.text_to_speech(payload.text, destination, accent=payload.accent)
     except PuterError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return FileResponse(destination, media_type="audio/mpeg", filename="voice.mp3")
+    return FileResponse(
+        destination, media_type="audio/mpeg", filename="voice.mp3",
+        headers={"X-Moja-Voice": profile.key, "X-Moja-Voice-Id": profile.voice_id},
+    )
 
 
 @app.post("/api/v1/puter/sticker")
@@ -450,6 +463,21 @@ def list_themes() -> List[ThemeInfo]:
             shake=theme.shake_kind,
         )
         for theme in THEMES.values()
+    ]
+
+
+@app.get("/api/v1/voices", response_model=List[VoiceInfo])
+def list_voices() -> List[VoiceInfo]:
+    """Voice profiles the voiceover can use, shaping included."""
+    return [
+        VoiceInfo(
+            key=profile.key,
+            label=profile.label,
+            voice_id=profile.voice_id,
+            language=profile.language,
+            deep=profile.pitch_semitones < -1.0,
+        )
+        for profile in VOICE_PROFILES.values()
     ]
 
 

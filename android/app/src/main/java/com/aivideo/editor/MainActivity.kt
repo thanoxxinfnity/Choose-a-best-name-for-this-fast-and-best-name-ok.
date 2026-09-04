@@ -13,6 +13,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -113,7 +115,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun EditorScreen(
     onOpenSettings: () -> Unit,
@@ -253,34 +255,88 @@ fun EditorScreen(
 
             // ----------------------------------------------------- options --
             SectionCard(title = "3. Options") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Word level captions", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Faster-Whisper animated subtitles",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                ToggleRow(
+                    title = "Word level captions",
+                    subtitle = "Faster-Whisper animated subtitles",
+                    checked = state.captionsEnabled,
+                    onCheckedChange = viewModel::setCaptionsEnabled,
+                )
+
+                Text("Editing mode", style = MaterialTheme.typography.bodyMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.theme == "auto",
+                        onClick = { viewModel.setTheme("auto") },
+                        label = { Text("Auto") },
+                    )
+                    state.themes.forEach { theme ->
+                        FilterChip(
+                            selected = state.theme == theme.key,
+                            onClick = { viewModel.setTheme(theme.key) },
+                            label = { Text(theme.name) },
                         )
                     }
-                    Switch(
-                        checked = state.captionsEnabled,
-                        onCheckedChange = viewModel::setCaptionsEnabled,
+                }
+                state.themes.firstOrNull { it.key == state.theme }?.let { theme ->
+                    Text(
+                        theme.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                } ?: if (state.theme == "auto") {
+                    Text(
+                        "Moja AI picks the mode from what it sees in your footage.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else Unit
+
+                Text("Voiceover voice", style = MaterialTheme.typography.bodyMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val voices = state.voices.ifEmpty {
+                        VOICE_ACCENTS.map { (key, label) -> VoiceDto(key = key, label = label) }
+                    }
+                    voices.forEach { voice ->
+                        FilterChip(
+                            selected = state.voiceAccent == voice.key,
+                            onClick = { viewModel.setVoiceAccent(voice.key) },
+                            label = { Text(voice.label) },
+                            leadingIcon = if (voice.deep) {
+                                { Text("\uD83C\uDF11") }
+                            } else null,
+                        )
+                    }
                 }
 
-                Text("Voiceover accent", style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    VOICE_ACCENTS.forEach { (value, label) ->
-                        FilterChip(
-                            selected = state.voiceAccent == value,
-                            onClick = { viewModel.setVoiceAccent(value) },
-                            label = { Text(label) },
-                        )
-                    }
+                ToggleRow(
+                    title = "AI intro",
+                    subtitle = "Animates the opening frame with wan2.2 image-to-video",
+                    checked = state.enableIntro,
+                    onCheckedChange = viewModel::setEnableIntro,
+                )
+                ToggleRow(
+                    title = "AI outro",
+                    subtitle = "Generated closing sequence with a follow card",
+                    checked = state.enableOutro,
+                    onCheckedChange = viewModel::setEnableOutro,
+                )
+                ToggleRow(
+                    title = "Keyframe animation",
+                    subtitle = "Animates a key moment and splices it back into the cut",
+                    checked = state.enableAnimation,
+                    onCheckedChange = viewModel::setEnableAnimation,
+                )
+                if (state.enableAnimation) {
+                    Text(
+                        "Animated moments: ${state.maxAnimations}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Slider(
+                        value = state.maxAnimations.toFloat(),
+                        onValueChange = { viewModel.setMaxAnimations(it.toInt()) },
+                        valueRange = 1f..4f,
+                        steps = 2,
+                    )
                 }
 
                 Text(
@@ -390,15 +446,41 @@ fun EditorScreen(
     }
 }
 
+/** Offline fallback list; the live one comes from GET /api/v1/voices. */
 private val VOICE_ACCENTS = listOf(
     "indian_accent" to "Indian (F)",
     "indian_accent_male" to "Indian (M)",
     "hinglish" to "Hinglish",
+    "deep_dark" to "Deep dark",
 )
 
 // ---------------------------------------------------------------------------
 // Pieces
 // ---------------------------------------------------------------------------
+
+@Composable
+private fun ToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
@@ -522,7 +604,8 @@ private fun JobCard(job: JobStatusDto, onCancel: () -> Unit, showCancel: Boolean
 
 private fun stageLabel(stage: String): String = when (stage) {
     "queued" -> "Queued"
-    "analyzing" -> "Analysing clips"
+    "analyzing" -> "Analysing what is in the footage"
+    "animating" -> "Generating AI animation"
     "planning" -> "Kimi K3 is planning the edit"
     "tts" -> "Puter.js TTS (Indian accent)"
     "stickers" -> "Generating AI stickers"

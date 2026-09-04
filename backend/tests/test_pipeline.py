@@ -51,7 +51,13 @@ def test_parse_timecode(value, expected):
 
 def test_format_timecode_roundtrip():
     assert format_timecode(3723) == "01:02:03"
-    assert parse_timecode(format_timecode(95.4)) == 95.0
+    # Sub-second precision must survive: voiceover lines are pinned to it.
+    assert format_timecode(95.4) == "00:01:35.400"
+    assert parse_timecode(format_timecode(95.4)) == pytest.approx(95.4)
+    assert parse_timecode(format_timecode(4.5)) == pytest.approx(4.5)
+    assert format_timecode(4.0) == "00:00:04"
+    assert format_timecode(1.9999) == "00:00:02"
+    assert format_timecode(95.4, keep_millis=False) == "00:01:35"
 
 
 # --------------------------------------------------------------- JSON parsing --

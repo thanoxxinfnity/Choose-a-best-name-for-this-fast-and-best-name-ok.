@@ -24,6 +24,13 @@ data class EditorUiState(
     val voiceAccent: String = "indian_accent",
     val maxStickers: Int = 4,
     val maxInpaints: Int = 2,
+    val theme: String = "auto",
+    val enableAnimation: Boolean = false,
+    val maxAnimations: Int = 1,
+    val enableIntro: Boolean = false,
+    val enableOutro: Boolean = false,
+    val themes: List<ThemeDto> = emptyList(),
+    val voices: List<VoiceDto> = emptyList(),
 
     val isUploading: Boolean = false,
     val uploadedBytes: Long = 0L,
@@ -112,6 +119,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _state.update { it.copy(voiceAccent = value) }
     }
 
+    fun setTheme(value: String) = _state.update { it.copy(theme = value) }
+
+    fun setEnableAnimation(value: Boolean) = _state.update { it.copy(enableAnimation = value) }
+
+    fun setMaxAnimations(value: Int) = _state.update { it.copy(maxAnimations = value) }
+
+    fun setEnableIntro(value: Boolean) = _state.update { it.copy(enableIntro = value) }
+
+    fun setEnableOutro(value: Boolean) = _state.update { it.copy(enableOutro = value) }
+
     fun setMaxStickers(value: Int) = _state.update { it.copy(maxStickers = value) }
 
     fun setMaxInpaints(value: Int) = _state.update { it.copy(maxInpaints = value) }
@@ -121,11 +138,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     // -------------------------------------------------------------- health
     fun refreshHealth() {
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { ApiClient.checkHealth(context) }
-            result.fold(
-                onSuccess = { health -> _state.update { it.copy(health = health) } },
+            val health = withContext(Dispatchers.IO) { ApiClient.checkHealth(context) }
+            health.fold(
+                onSuccess = { value -> _state.update { it.copy(health = value) } },
                 onFailure = { _state.update { it.copy(health = null) } },
             )
+            // The theme and voice lists come from the backend so the UI can
+            // never offer a mode the renderer does not implement.
+            val themes = withContext(Dispatchers.IO) { ApiClient.listThemes(context) }
+            themes.onSuccess { value -> _state.update { it.copy(themes = value) } }
+            val voices = withContext(Dispatchers.IO) { ApiClient.listVoices(context) }
+            voices.onSuccess { value -> _state.update { it.copy(voices = value) } }
         }
     }
 
@@ -162,6 +185,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     voiceAccent = current.voiceAccent,
                     maxStickers = current.maxStickers,
                     maxInpaints = current.maxInpaints,
+                    theme = current.theme,
+                    enableAnimation = current.enableAnimation,
+                    maxAnimations = current.maxAnimations,
+                    enableIntro = current.enableIntro,
+                    enableOutro = current.enableOutro,
                 ) { uploaded, total ->
                     _state.update { it.copy(uploadedBytes = uploaded, totalBytes = total) }
                 }

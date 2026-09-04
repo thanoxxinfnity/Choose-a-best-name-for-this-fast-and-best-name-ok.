@@ -46,11 +46,24 @@ def parse_timecode(value: Any) -> float:
         return 0.0
 
 
-def format_timecode(seconds: float) -> str:
+def format_timecode(seconds: float, keep_millis: bool = True) -> str:
+    """Seconds -> ``HH:MM:SS`` (or ``HH:MM:SS.mmm`` when it would lose precision).
+
+    Voiceover lines are pinned to sub-second positions, so truncating to whole
+    seconds here would silently drag every line up to 999ms out of sync.
+    """
     seconds = max(0.0, float(seconds))
-    hours, remainder = divmod(int(seconds), 3600)
+    whole = int(seconds)
+    millis = int(round((seconds - whole) * 1000))
+    if millis == 1000:  # rounded up into the next second
+        whole += 1
+        millis = 0
+    hours, remainder = divmod(whole, 3600)
     minutes, secs = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    base = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    if keep_millis and millis:
+        return f"{base}.{millis:03d}"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -121,18 +134,59 @@ class ProjectMeta(BaseModel):
         return int(width), int(height)
 
 
+class TtsLine(BaseModel):
+    """One spoken line, placed at an exact point in the finished edit."""
+
+    model_config = ConfigDict(extra="allow")
+
+    text: str = ""
+    # Where the line starts in the FINAL timeline (not in a source clip).
+    start_time: str = "00:00:00"
+    # Optional per-line voice override, e.g. a deep narrator for the hook and a
+    # hype voice for the payoff.
+    voice: Optional[str] = None
+    gain: float = 1.0
+
+    @field_validator("start_time", mode="before")
+    @classmethod
+    def _coerce_start(cls, value: Any) -> str:
+        if isinstance(value, (int, float)):
+            return format_timecode(float(value))
+        return str(value)
+
+    @property
+    def start_seconds(self) -> float:
+        return parse_timecode(self.start_time)
+
+    @property
+    def active(self) -> bool:
+        return bool(self.text.strip())
+
+
 class AudioSpec(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     use_puter_tts: bool = False
+    # Voice profile key: indian_accent, indian_accent_male, hinglish,
+    # deep_dark, deep_dark_female, horror_whisper, hype, ...
     voice_accent: str = "indian_accent"
+    # A single block of narration, laid over the whole edit.
     tts_script: str = ""
+    # Or individual lines pinned to timeline positions. When both are given the
+    # lines win, because they carry timing.
+    tts_lines: List[TtsLine] = Field(default_factory=list)
     keep_original_audio: bool = True
     background_music_gain: Optional[float] = None
+    # Duck the bed further while a line is actually speaking.
+    duck_under_voice: float = 0.08
+
+    @property
+    def timed_lines(self) -> List[TtsLine]:
+        return [line for line in self.tts_lines if line.active]
 
     @property
     def has_voiceover(self) -> bool:
-        return bool(self.use_puter_tts and self.tts_script.strip())
+        return bool(self.use_puter_tts and (self.tts_script.strip() or self.timed_lines))
 
 
 class PuterSticker(BaseModel):
@@ -253,6 +307,28 @@ class TimelineSegment(BaseModel):
         return max(0.0, self.end_seconds - self.start_seconds)
 
 
+class GeneratedSequence(BaseModel):
+    """An AI generated intro or outro spliced onto the edit."""
+
+    model_config = ConfigDict(extra="allow")
+
+    active: bool = False
+    prompt: str = ""
+    seconds: float = 3.0
+    # "t2v"  -> generate from the prompt alone
+    # "i2v"  -> animate a frame of the edit (first frame for an intro, last for
+    #           an outro) so the sequence matches the footage
+    mode: str = "i2v"
+    motion_strength: float = 0.7
+    # Optional title burnt over the generated sequence.
+    text: str = ""
+    text_animation: str = "pop_up"
+
+    @property
+    def is_enabled(self) -> bool:
+        return bool(self.active and (self.prompt.strip() or self.text.strip()))
+
+
 class CaptionSpec(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -273,6 +349,8 @@ class EditPlan(BaseModel):
     audio: AudioSpec = Field(default_factory=AudioSpec)
     edit_timeline: List[TimelineSegment] = Field(default_factory=list)
     captions: CaptionSpec = Field(default_factory=CaptionSpec)
+    intro: GeneratedSequence = Field(default_factory=GeneratedSequence)
+    outro: GeneratedSequence = Field(default_factory=GeneratedSequence)
     theme: str = "normal"
     notes: Optional[str] = None
 
@@ -368,6 +446,14 @@ class TtsRequest(BaseModel):
 class StickerRequest(BaseModel):
     prompt: str
     remove_background: bool = True
+
+
+class VoiceInfo(BaseModel):
+    key: str
+    label: str
+    voice_id: str
+    language: str
+    deep: bool = False
 
 
 class ThemeInfo(BaseModel):

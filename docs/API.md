@@ -112,10 +112,19 @@ without downloading the whole file.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/v1/themes` | the four editing modes and their pacing/shake |
+| `GET` | `/api/v1/voices` | voice profiles, `deep: true` marks the deep/dark narrators |
 | `POST` | `/api/v1/analyze` | multipart `video` -> subjects, art style, mood, energy, scene cuts, motion peaks, palette, beats, BPM, silence spans, recommended theme |
 
-`POST /api/v1/render` also accepts `theme` (`auto`, `anime_edits`, `haunted`,
-`playful`, `normal`) and `enable_animation` (keyframe-to-animation insertion).
+`POST /api/v1/render` also accepts:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `theme` | `auto` | `auto`, `anime_edits`, `haunted`, `playful`, `normal` |
+| `voice_accent` | `indian_accent` | any key from `/api/v1/voices` |
+| `enable_animation` | `false` | keyframe-to-animation insertion |
+| `max_animations` | `1` | how many moments may be animated (0-4) |
+| `enable_intro` | `false` | generate an AI intro |
+| `enable_outro` | `false` | generate an AI outro |
 
 ## AI video generation (Puter.js wan2.2)
 

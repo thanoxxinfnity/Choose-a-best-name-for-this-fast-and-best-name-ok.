@@ -58,26 +58,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Voice:
-    voice_id: str
-    language: str
-    engine: str
-    label: str
-
-
-VOICE_CATALOGUE: Dict[str, Voice] = {
-    # Indian English (the accent requested by the blueprint).
-    "indian_accent": Voice("Kajal", "en-IN", "neural", "Indian English (female)"),
-    "indian_accent_male": Voice("Arjun", "en-IN", "neural", "Indian English (male)"),
-    "indian_accent_hindi": Voice("Aditi", "en-IN", "standard", "Hindi / Hinglish"),
-    "hinglish": Voice("Aditi", "en-IN", "standard", "Hindi / Hinglish"),
-    # Non Indian fallbacks.
-    "us_accent": Voice("Joanna", "en-US", "neural", "US English (female)"),
-    "uk_accent": Voice("Amy", "en-GB", "neural", "British English (female)"),
-}
-
-DEFAULT_VOICE = VOICE_CATALOGUE["indian_accent"]
+# The catalogue moved to voices.py so a profile can carry its shaping chain
+# (pitch, timbre, reverb) alongside the provider voice id.
+from voices import VoiceProfile, resolve_voice as resolve_voice_profile, shape_voice
 
 # Polly rejects requests above ~3000 characters, so long scripts are chunked.
 TTS_CHUNK_CHARS = 2800
@@ -303,13 +286,8 @@ class PuterClient:
 
     # ------------------------------------------------------------------- TTS
     @staticmethod
-    def resolve_voice(accent: Optional[str]) -> Voice:
-        key = (accent or "").strip().lower().replace("-", "_").replace(" ", "_")
-        if key in VOICE_CATALOGUE:
-            return VOICE_CATALOGUE[key]
-        if "indian" in key or key in ("hi", "hi_in", "en_in", "india"):
-            return DEFAULT_VOICE
-        return DEFAULT_VOICE
+    def resolve_voice(accent: Optional[str]) -> VoiceProfile:
+        return resolve_voice_profile(accent)
 
     def text_to_speech(
         self,
@@ -318,17 +296,25 @@ class PuterClient:
         accent: str = "indian_accent",
         speed: float = 1.0,
     ) -> Path:
-        """Synthesise ``text`` with an Indian accent and write an ``.mp3``."""
+        """Synthesise ``text`` and write a shaped ``.mp3``.
+
+        The provider voice comes from the profile; the profile's character
+        (deep / dark / mysterious, whisper, hype) is then applied locally with
+        ffmpeg, because Polly has no such voice to ask for.
+        """
         script = (text or "").strip()
         if not script:
             raise PuterError("Cannot synthesise speech from an empty script.")
 
-        voice = self.resolve_voice(accent)
+        profile = self.resolve_voice(accent)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         chunks = _chunk_text(script, TTS_CHUNK_CHARS)
-        logger.info("Puter TTS: %s chunk(s), voice=%s (%s)", len(chunks), voice.voice_id, voice.language)
+        logger.info(
+            "Puter TTS: %s chunk(s), profile=%s voice=%s (%s)",
+            len(chunks), profile.key, profile.voice_id, profile.language,
+        )
 
         parts: List[Path] = []
         with tempfile.TemporaryDirectory(prefix="puter-tts-") as tmp:
@@ -336,10 +322,10 @@ class PuterClient:
             for index, chunk in enumerate(chunks):
                 args = {
                     "text": chunk,
-                    "voice": voice.voice_id,
-                    "language": voice.language,
-                    "engine": voice.engine,
-                    "accent": "indian_accent",
+                    "voice": profile.voice_id,
+                    "language": profile.language,
+                    "engine": profile.engine,
+                    "accent": profile.language,
                     "format": "mp3",
                     "speed": round(float(speed), 2),
                 }
@@ -357,10 +343,13 @@ class PuterClient:
                 part.write_bytes(audio)
                 parts.append(part)
 
+            raw = tmp_dir / "raw.mp3"
             if len(parts) == 1:
-                shutil.copyfile(parts[0], output_path)
+                shutil.copyfile(parts[0], raw)
             else:
-                _concat_audio(parts, output_path)
+                _concat_audio(parts, raw)
+            shape_voice(raw, output_path, profile, ffmpeg=ffmpeg_binary(),
+                        audio_bitrate=settings.audio_bitrate)
 
         logger.info("Puter TTS written to %s (%s bytes)", output_path, output_path.stat().st_size)
         return output_path

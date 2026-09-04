@@ -35,16 +35,24 @@ from puter_integration import (
     extract_frames,
     ffmpeg_binary,
 )
+from puter_video import (
+    PuterVideoClient,
+    animate_keyframe,
+    conform_generated_clip,
+    extract_keyframe,
+)
 from sticker_art import draw_sticker
 from themes import Theme, resolve_theme
 from vfx import apply_frame_effect, build_effect_chain
 from schemas import (
     EditPlan,
+    GeneratedSequence,
     JobStage,
     PuterSticker,
     StickerAnimation,
     TextOverlay,
     TimelineSegment,
+    TtsLine,
 )
 
 logger = logging.getLogger(__name__)
@@ -465,6 +473,8 @@ class VideoRenderer:
         self.assets_dir = self.workspace / "assets"
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self._open_clips: List[Any] = []
+        self._video_client_cache: Optional[PuterVideoClient] = None
+        self._intro_offset: float = 0.0
 
         # The theme drives caption colours and sticker animation unless the
         # plan asked for something specific.
@@ -507,27 +517,45 @@ class VideoRenderer:
             voiceover = self._generate_voiceover()
             stickers = self._generate_stickers()
             base_video = self._render_base_video()
+            base_video = self._attach_intro_outro(base_video)
             return self._compose_final(base_video, voiceover, stickers, output_path)
         finally:
             self.close()
 
     # ------------------------------------------------------------------ TTS
-    def _generate_voiceover(self) -> Optional[Path]:
+    def _generate_voiceover(self) -> List[Tuple[Path, float, float]]:
+        """Synthesise the narration.
+
+        Returns ``[(mp3, start_seconds, gain)]``.  A plan with ``tts_lines``
+        gets one file per line pinned to its own timestamp; a plan with only
+        ``tts_script`` gets a single track starting at 0.
+        """
         audio = self.plan.audio
         if not audio.has_voiceover:
-            return None
+            return []
         if self.puter is None or not self.puter.is_configured:
             self.warn("Puter.js key missing - the Indian accent voiceover was skipped.")
-            return None
+            return []
 
-        self.report(JobStage.TTS, 0.05, "Synthesising the Indian accent voiceover with Puter.js")
-        destination = self.assets_dir / "voiceover.mp3"
-        try:
-            self.puter.text_to_speech(audio.tts_script, destination, accent=audio.voice_accent)
-            return destination
-        except PuterError as exc:
-            self.warn(f"Puter TTS failed: {exc}")
-            return None
+        lines = audio.timed_lines
+        if not lines:
+            lines = [TtsLine(text=audio.tts_script, start_time="00:00:00")]
+
+        rendered: List[Tuple[Path, float, float]] = []
+        for index, line in enumerate(lines):
+            voice = line.voice or audio.voice_accent
+            self.report(
+                JobStage.TTS,
+                0.04 + 0.05 * (index / max(len(lines), 1)),
+                f"Voiceover {index + 1}/{len(lines)} ({voice}) at {line.start_time}",
+            )
+            destination = self.assets_dir / f"voice_{index:02d}.mp3"
+            try:
+                self.puter.text_to_speech(line.text, destination, accent=voice)
+                rendered.append((destination, line.start_seconds, max(0.0, line.gain)))
+            except PuterError as exc:
+                self.warn(f"Puter TTS failed for line {index + 1}: {exc}")
+        return rendered
 
     # ------------------------------------------------------------- stickers
     def _generate_stickers(self) -> Dict[int, Path]:
@@ -587,8 +615,15 @@ class VideoRenderer:
                 f"Segment {index + 1}/{len(timeline)} ({segment.cut_type})",
             )
             clip = self._build_segment(index, segment)
+            animation = self._build_animation(index, segment)
+
+            if animation is not None and segment.puter_animate.mode == "replace":
+                segment_clips.append(animation)
+                continue
             if clip is not None:
                 segment_clips.append(clip)
+            if animation is not None:
+                segment_clips.append(animation)
 
         if not segment_clips:
             raise RenderError("Every timeline segment failed to build.")
@@ -601,6 +636,153 @@ class VideoRenderer:
         base_path = self.workspace / "base.mp4"
         self._write_video(base, base_path, with_audio=True)
         return base_path
+
+    def _attach_intro_outro(self, base_video: Path) -> Path:
+        """Generate the AI intro / outro and splice them onto the cut."""
+        intro, outro = self.plan.intro, self.plan.outro
+        if not (intro.is_enabled or outro.is_enabled):
+            return base_video
+
+        pieces: List[Path] = []
+        if intro.is_enabled:
+            generated = self._generate_sequence(intro, base_video, "intro")
+            if generated:
+                pieces.append(generated)
+                probe = self._track(VideoFileClip(str(generated)))
+                self._intro_offset = float(probe.duration or 0.0)
+        pieces.append(base_video)
+        if outro.is_enabled:
+            generated = self._generate_sequence(outro, base_video, "outro")
+            if generated:
+                pieces.append(generated)
+
+        if len(pieces) == 1:
+            return base_video
+
+        self.report(JobStage.RENDERING, 0.64, f"Splicing {len(pieces) - 1} generated sequence(s)")
+        clips = [self._track(VideoFileClip(str(path))) for path in pieces]
+        joined = concatenate_videoclips([_with_fps(clip, self.fps) for clip in clips],
+                                        method="compose")
+        joined = _with_fps(joined, self.fps)
+        self._track(joined)
+        destination = self.workspace / "base_with_bookends.mp4"
+        self._write_video(joined, destination, with_audio=True)
+        return destination
+
+    def _generate_sequence(
+        self, spec: GeneratedSequence, base_video: Path, kind: str
+    ) -> Optional[Path]:
+        """One AI intro or outro: image-to-video off the edit, or text-to-video."""
+        destination = self.workspace / f"{kind}.mp4"
+        conformed = self.workspace / f"{kind}_conformed.mp4"
+
+        client = self._video_client()
+        if client is None:
+            if spec.text.strip():
+                return self._title_card(spec, kind)
+            self.warn(f"Puter.js key missing - the AI {kind} was skipped.")
+            return None
+
+        self.report(
+            JobStage.ANIMATING, 0.20,
+            f"Generating the {kind} ({spec.mode}, {spec.seconds:.1f}s): {spec.prompt[:44]}",
+        )
+        try:
+            if spec.mode == "t2v":
+                client.text_to_video(
+                    spec.prompt, destination,
+                    seconds=spec.seconds,
+                    resolution=f"{self.width}x{self.height}",
+                    model=settings.puter_t2v_model,
+                )
+            else:
+                # Animate the first frame for an intro, the last for an outro,
+                # so the generated piece matches the footage it sits next to.
+                probe = self._track(VideoFileClip(str(base_video)))
+                at = 0.05 if kind == "intro" else max((probe.duration or 1.0) - 0.1, 0.0)
+                still = extract_keyframe(base_video, at, self.workspace / f"{kind}_seed.png")
+                client.image_to_video(
+                    still, self._sequence_prompt(spec, kind), destination,
+                    seconds=spec.seconds, model=settings.puter_i2v_model,
+                    motion_strength=spec.motion_strength,
+                )
+            conform_generated_clip(destination, conformed, self.width, self.height, self.fps)
+        except Exception as exc:
+            self.warn(f"AI {kind} generation failed: {exc}")
+            return self._title_card(spec, kind) if spec.text.strip() else None
+
+        return self._burn_title(conformed, spec, kind) if spec.text.strip() else conformed
+
+    def _sequence_prompt(self, spec: GeneratedSequence, kind: str) -> str:
+        analysis = self.analyses[0] if self.analyses else None
+        bits = [spec.prompt.strip()]
+        if analysis is not None:
+            subjects = getattr(analysis, "subjects", None) or []
+            if subjects:
+                bits.append("featuring " + ", ".join(subjects[:2]))
+            for attribute in ("art_style", "mood"):
+                value = getattr(analysis, attribute, "")
+                if value:
+                    bits.append(value)
+        bits.append(
+            "cinematic title card opening" if kind == "intro" else "closing shot, fading out"
+        )
+        bits.append("vertical 9:16, no text, consistent style")
+        return ", ".join(bit for bit in bits if bit)
+
+    def _title_card(self, spec: GeneratedSequence, kind: str) -> Optional[Path]:
+        """Fallback bookend: the title over a graded still, no generation needed."""
+        try:
+            array = render_text_rgba(
+                spec.text.upper(), max_width=int(self.width * 0.86),
+                font_size=int(self.height * 0.075),
+                color=self.theme.text_colour, three_d=True,
+            )
+        except Exception as exc:
+            self.warn(f"Could not draw the {kind} title card: {exc}")
+            return None
+
+        background = ColorClip(size=(self.width, self.height), color=(6, 6, 10))
+        background = _with_duration(background, max(spec.seconds, 1.0))
+        title = _clip_from_rgba(array)
+        title = _with_duration(title, max(spec.seconds, 1.0))
+        title = self._animate(title, spec.text_animation, "center", max(spec.seconds, 1.0),
+                              (array.shape[1], array.shape[0]))
+        card = CompositeVideoClip([background, title], size=(self.width, self.height))
+        card = _with_fps(_with_duration(card, max(spec.seconds, 1.0)), self.fps)
+        self._track(card)
+        destination = self.workspace / f"{kind}_card.mp4"
+        self._write_video(card, destination, with_audio=False)
+        self.warn(f"Used a rendered title card for the {kind} (no AI video available).")
+        return destination
+
+    def _burn_title(self, video: Path, spec: GeneratedSequence, kind: str) -> Path:
+        try:
+            array = render_text_rgba(
+                spec.text.upper(), max_width=int(self.width * 0.86),
+                font_size=int(self.height * 0.072),
+                color=self.theme.text_colour, three_d=True,
+            )
+        except Exception:
+            return video
+        clip = self._track(VideoFileClip(str(video)))
+        duration = clip.duration or spec.seconds
+        title = _with_duration(_clip_from_rgba(array), duration)
+        title = self._animate(title, spec.text_animation, "center", duration,
+                              (array.shape[1], array.shape[0]))
+        composite = CompositeVideoClip([clip, title], size=(self.width, self.height))
+        composite = _with_fps(_with_duration(composite, duration), self.fps)
+        self._track(composite)
+        destination = self.workspace / f"{kind}_titled.mp4"
+        self._write_video(composite, destination, with_audio=False)
+        return destination
+
+    def _video_client(self) -> Optional[PuterVideoClient]:
+        if self.puter is None or not self.puter.is_configured:
+            return None
+        if self._video_client_cache is None:
+            self._video_client_cache = PuterVideoClient(api_key=self.puter.api_key)
+        return self._video_client_cache
 
     def _build_segment(self, index: int, segment: TimelineSegment):
         source_index = segment.source_index if segment.source_index is not None else index % len(self.clip_paths)
@@ -669,6 +851,72 @@ class VideoRenderer:
         if hasattr(clip, "fl"):
             return clip.fl(zoom, apply_to=[])
         return clip.transform(zoom, apply_to=[])
+
+    # ------------------------------------------- keyframe -> AI animation ---
+    def _build_animation(self, index: int, segment: TimelineSegment):
+        """Animate 1-2 key frames of this segment and return a clip to splice in.
+
+        This is the "keyframe-to-animation insertion" step: a still is lifted
+        from a critical moment, described with the surrounding story context and
+        animated by Puter image-to-video, then conformed to the canvas so it
+        drops into the timeline seamlessly.
+        """
+        spec = getattr(segment, "puter_animate", None)
+        if spec is None or not spec.is_enabled:
+            return None
+
+        client = self._video_client()
+        if client is None:
+            self.warn("Puter.js key missing - the keyframe animation was skipped.")
+            return None
+
+        source_index = segment.source_index if segment.source_index is not None else 0
+        if not 0 <= source_index < len(self.clip_paths):
+            source_index = 0
+        source = self.clip_paths[source_index]
+
+        midpoint = (segment.start_seconds + segment.end_seconds) / 2.0
+        stamps = [spec.keyframe_time if spec.keyframe_time is not None else midpoint]
+        if spec.second_keyframe_time is not None:
+            stamps.append(spec.second_keyframe_time)
+        stamps = [max(0.0, float(stamp)) for stamp in stamps][:2]
+
+        analysis = self.analyses[source_index] if source_index < len(self.analyses) else None
+        context = spec.story_context or (getattr(analysis, "summary", "") if analysis else "")
+        subjects = list(getattr(analysis, "subjects", None) or []) if analysis else []
+        art_style = getattr(analysis, "art_style", "") if analysis else ""
+        mood = getattr(analysis, "mood", "") if analysis else ""
+
+        produced: List[Path] = []
+        per_stamp = max(spec.seconds / max(len(stamps), 1), 1.0)
+        for order, stamp in enumerate(stamps):
+            self.report(
+                JobStage.ANIMATING,
+                0.20,
+                f"Animating keyframe {order + 1}/{len(stamps)} of segment {index + 1} "
+                f"at {stamp:.2f}s",
+            )
+            raw = self.workspace / f"anim_{index:03d}_{order}.mp4"
+            try:
+                animate_keyframe(
+                    client, source, stamp, spec.prompt, raw,
+                    seconds=per_stamp,
+                    workspace=self.workspace / f"anim_{index:03d}",
+                    story_context=context, subjects=subjects,
+                    art_style=art_style, mood=mood,
+                    motion_strength=spec.motion_strength,
+                )
+                conformed = self.workspace / f"anim_{index:03d}_{order}_fit.mp4"
+                conform_generated_clip(raw, conformed, self.width, self.height, self.fps)
+                produced.append(conformed)
+            except Exception as exc:
+                self.warn(f"Keyframe animation failed for segment {index + 1}: {exc}")
+
+        if not produced:
+            return None
+        clips = [_with_fps(self._track(VideoFileClip(str(path))), self.fps) for path in produced]
+        joined = clips[0] if len(clips) == 1 else concatenate_videoclips(clips, method="compose")
+        return self._track(_with_fps(joined, self.fps))
 
     # ------------------------------------------------------------ inpainting
     def _inpaint_segment(
@@ -825,7 +1073,7 @@ class VideoRenderer:
     def _compose_final(
         self,
         base_video: Path,
-        voiceover: Optional[Path],
+        voiceover: Sequence[Tuple[Path, float, float]],
         stickers: Dict[int, Path],
         output_path: Path,
     ) -> Path:
@@ -931,7 +1179,13 @@ class VideoRenderer:
         extended = concatenate_videoclips([clip, tail], method="compose")
         return self._track(_with_fps(extended, self.fps))
 
-    def _build_audio(self, base, voiceover: Optional[Path], duration: float):
+    def _build_audio(
+        self,
+        base,
+        voiceover: Sequence[Tuple[Path, float, float]],
+        duration: float,
+    ):
+        """Mix the ducked original bed with each voiceover line at its timestamp."""
         tracks = []
         keep_original = self.plan.audio.keep_original_audio
         gain = self.plan.audio.background_music_gain
@@ -942,11 +1196,18 @@ class VideoRenderer:
             tracks.append(_volume(base.audio, max(0.0, float(gain))))
 
         audio_duration = duration
-        if voiceover and Path(voiceover).exists():
-            narration = self._track(AudioFileClip(str(voiceover)))
-            narration = _volume(narration, settings.tts_audio_gain)
+        offset = self._intro_offset
+        for path, start, line_gain in voiceover:
+            if not Path(path).exists():
+                continue
+            narration = self._track(AudioFileClip(str(path)))
+            narration = _volume(narration, settings.tts_audio_gain * max(line_gain, 0.0))
+            # Lines are timed against the edit the planner saw, so a generated
+            # intro spliced in front has to shift them all.
+            placed_at = max(0.0, start + offset)
+            narration = _with_start(narration, placed_at)
             tracks.append(narration)
-            audio_duration = max(duration, narration.duration or duration)
+            audio_duration = max(audio_duration, placed_at + (narration.duration or 0.0))
 
         if not tracks:
             return None, duration
@@ -954,9 +1215,13 @@ class VideoRenderer:
             return _with_duration(tracks[0], audio_duration), audio_duration
         return _with_duration(CompositeAudioClip(tracks), audio_duration), audio_duration
 
-    def _export_audio_for_captions(self, audio_clip, voiceover: Optional[Path]) -> Optional[Path]:
-        if voiceover and Path(voiceover).exists():
-            return Path(voiceover)  # clean speech transcribes far better
+    def _export_audio_for_captions(
+        self, audio_clip, voiceover: Sequence[Tuple[Path, float, float]]
+    ) -> Optional[Path]:
+        # A single narration track transcribes far better than the mix; with
+        # several timed lines the mix is the only thing carrying their offsets.
+        if len(voiceover) == 1 and Path(voiceover[0][0]).exists():
+            return Path(voiceover[0][0])
         if audio_clip is None:
             return None
         destination = self.workspace / "caption_source.wav"
@@ -972,7 +1237,7 @@ class VideoRenderer:
     # --------------------------------------------------------------- layers
     def _segment_offsets(self) -> List[Tuple[float, float]]:
         offsets: List[Tuple[float, float]] = []
-        cursor = 0.0
+        cursor = self._intro_offset
         for segment in self.plan.edit_timeline:
             length = segment.duration / (segment.speed or 1.0)
             offsets.append((cursor, length))

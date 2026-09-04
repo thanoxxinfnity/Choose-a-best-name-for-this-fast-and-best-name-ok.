@@ -168,10 +168,40 @@ backend URL you configured; the backend never writes them to disk.
 | Render | **FFmpeg + MoviePy** | jump cuts, zoom punches, speed ramps, scale-to-cover vertical reframing, sticker/text overlays, audio ducking, H.264 `yuv420p` + `faststart` |
 
 | Editing modes | local | `themes.py` - **Haunted** (desaturated, cold tint, heavy vignette, handheld drift), **Playful** (vibrant, beat-locked pulse zoom), **Normal Edits** (cinematic grade), **Anime Edits** (punched contrast, bloom, directional impact shake with RGB split and motion blur on every cut). Selected by `choose_theme()` from content type, brightness and energy, or forced with the `theme` form field |
-| Video generation | **Puter.js wan2.2** | `puter_video.py` - text-to-video (`wan-ai/wan2.2-t2v-a14b`), image-to-video (`wan-ai/wan2.2-i2v-a14b`), and keyframe-to-animation insertion: a still is lifted from the source at a chosen timestamp, animated with the surrounding story context, conformed to the canvas and spliced into the timeline |
+| Video generation | **Puter.js wan2.2** | `puter_video.py` - text-to-video (`wan-ai/wan2.2-t2v-a14b`), image-to-video (`wan-ai/wan2.2-i2v-a14b`), and keyframe-to-animation insertion: 1-2 stills are lifted from a critical moment, described with the surrounding story context (subjects, art style, mood from the analysis pass), animated, conformed to the canvas and either spliced in after the segment (`insert`) or used in its place (`replace`) |
+| AI intro / outro | **Puter.js wan2.2** | `intro` / `outro` on the plan. `i2v` animates the edit's own first or last frame so the bookend matches the footage; `t2v` invents a shot from the prompt. A title can be burnt over it, and without a Puter key it degrades to a rendered title card rather than vanishing |
+| Voiceover | **Puter TTS + local shaping** | `voices.py` - the provider voice (Polly `Kajal`/`Arjun`/`Aditi`, `en-IN`) plus an ffmpeg shaping chain, which is how a **deep dark mysterious** narrator exists at all: pitch down 4.5 semitones, slow to 0.92, high-pass 70 Hz, low-pass 7.2 kHz, two-tap reverb, limiter. Lines are pinned to timestamps in the finished edit and shift automatically when a generated intro is spliced in front |
 
 The JSON contract Kimi K3 must emit is documented in `docs/PIPELINE.md` and
 enforced by `schemas.EditPlan`.
+
+### Voice profiles
+
+| Key | Voice | Character |
+|---|---|---|
+| `indian_accent` | Kajal, en-IN neural | Indian English, female, unshaped |
+| `indian_accent_male` | Arjun, en-IN neural | Indian English, male, unshaped |
+| `hinglish` | Aditi, en-IN | Hindi / Hinglish |
+| `deep_dark` | Arjun + shaping | **deep dark mysterious** narrator: -4.5 st, 0.92x, darkened, reverb |
+| `deep_dark_female` | Kajal + shaping | the same character, female |
+| `horror_whisper` | Aditi + shaping | -2 st, 0.88x, heavy reverb, 5.2 kHz ceiling |
+| `hype` | Arjun + shaping | +1 st, 1.08x, louder |
+
+Timing is per line, not per script:
+
+```json
+"audio": {
+  "use_puter_tts": true,
+  "voice_accent": "deep_dark",
+  "tts_lines": [
+    { "text": "Andhere mein ek shakti jaag rahi hai", "start_time": "00:00:00.500" },
+    { "text": "Aur ab sab badal jayega", "start_time": "00:00:03.250", "voice": "hype" }
+  ]
+}
+```
+
+`start_time` keeps milliseconds, lines are de-overlapped and clamped to the edit,
+and the bed ducks under them.
 
 ### Editing modes
 
