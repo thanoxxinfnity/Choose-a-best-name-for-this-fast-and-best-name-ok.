@@ -321,9 +321,16 @@ class KimiOrchestrator:
         )
 
         raw: Optional[str] = None
+        deadline = time.monotonic() + settings.nim_plan_budget_seconds
         for model in self._model_candidates():
+            if time.monotonic() >= deadline:
+                warnings.append(
+                    f"Kimi K3 did not answer within "
+                    f"{settings.nim_plan_budget_seconds}s - used the deterministic editor."
+                )
+                break
             try:
-                raw = self._chat(model, user_message)
+                raw = self._chat(model, user_message, deadline=deadline)
                 if model != self.model:
                     warnings.append(f"Kimi model '{self.model}' unavailable - used '{model}'.")
                     self.model = model
@@ -363,7 +370,7 @@ class KimiOrchestrator:
             candidates.append(settings.nim_fallback_model)
         return candidates
 
-    def _chat(self, model: str, user_message: str) -> str:
+    def _chat(self, model: str, user_message: str, deadline: Optional[float] = None) -> str:
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": model,
@@ -386,8 +393,17 @@ class KimiOrchestrator:
         last_error: Optional[str] = None
         rate_limited = False
         for attempt in range(1, self.max_retries + 1):
+            remaining = (deadline - time.monotonic()) if deadline else None
+            if remaining is not None and remaining <= 1.0:
+                raise OrchestratorError(
+                    f"NVIDIA NIM ran out of the planning time budget "
+                    f"({settings.nim_plan_budget_seconds}s)."
+                )
+            request_timeout = min(self.timeout, remaining) if remaining else self.timeout
             try:
-                response = self.session.post(url, headers=headers, json=payload, timeout=self.timeout)
+                response = self.session.post(
+                    url, headers=headers, json=payload, timeout=request_timeout
+                )
             except requests.RequestException as exc:
                 last_error = f"network error: {exc}"
                 time.sleep(min(2 ** attempt, 8))
@@ -410,6 +426,13 @@ class KimiOrchestrator:
                 delay = _retry_after_seconds(response) or RATE_LIMIT_BACKOFF[
                     min(attempt - 1, len(RATE_LIMIT_BACKOFF) - 1)
                 ]
+                if deadline is not None:
+                    delay = min(delay, max(0.0, deadline - time.monotonic()))
+                    if delay <= 0.5:
+                        raise NimRateLimited(
+                            "NVIDIA NIM kept rate limiting this key until the planning "
+                            "budget ran out."
+                        )
                 logger.info(
                     "NIM rate limited on %s, waiting %ss (attempt %s/%s)",
                     model, delay, attempt, self.max_retries,

@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     nim_timeout: int = 120
     # NIM enforces its limit per minute; see RATE_LIMIT_BACKOFF in orchestrator.
     nim_max_retries: int = 5
+    # Hard ceiling on the whole planning step. Without it, 5 retries x a 120s
+    # request timeout x 2 model candidates is a 30 minute worst case and the
+    # Android client just sees "planning" forever.
+    nim_plan_budget_seconds: int = 240
     # Vision pass: what is actually in the footage (subjects, style, mood).
     nim_vision_model: str = "meta/llama-3.2-90b-vision-instruct"
     nim_vision_fallback_model: str = "meta/llama-3.2-11b-vision-instruct"
