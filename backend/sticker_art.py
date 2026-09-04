@@ -18,6 +18,8 @@ import math
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+import cv2
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 RGB = Tuple[int, int, int]
@@ -203,6 +205,23 @@ def pick_shape(prompt: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _dilate(mask: Image.Image, radius: int) -> Image.Image:
+    """Grow a mask.  PIL's MaxFilter is O(k^2) per pixel and takes minutes at
+    the kernel sizes a 1500px sticker needs; OpenCV's morphology is separable
+    and finishes in milliseconds."""
+    if radius <= 0:
+        return mask.copy()
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+    return Image.fromarray(cv2.dilate(np.array(mask), kernel), "L")
+
+
+def _erode(mask: Image.Image, radius: int) -> Image.Image:
+    if radius <= 0:
+        return mask.copy()
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+    return Image.fromarray(cv2.erode(np.array(mask), kernel), "L")
+
+
 def _scale(points: Sequence[Point], size: int) -> List[Tuple[float, float]]:
     return [(x * size, y * size) for x, y in points]
 
@@ -249,10 +268,7 @@ def draw_sticker(
         mask = ImageChops.subtract(mask, cut)
 
     rim_width = max(4, int(big * 0.035))
-    rim_mask = Image.new("L", (big, big), 0)
-    rim_draw = ImageDraw.Draw(rim_mask)
-    rim_draw.polygon(polygon, fill=255)
-    rim_mask = rim_mask.filter(ImageFilter.MaxFilter(rim_width * 2 + 1))
+    rim_mask = _dilate(mask, rim_width)
 
     # --- body -------------------------------------------------------------
     canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
@@ -266,7 +282,7 @@ def draw_sticker(
     canvas.alpha_composite(fill)
 
     # Inner top-left sheen: the body mask, eroded and shifted up.
-    sheen_mask = mask.filter(ImageFilter.MinFilter(max(3, int(big * 0.09)) | 1))
+    sheen_mask = _erode(mask, max(2, int(big * 0.045)))
     sheen_mask = ImageChops.offset(sheen_mask, 0, -int(big * 0.10))
     sheen_mask = ImageChops.multiply(sheen_mask, mask)
     sheen_mask = sheen_mask.filter(ImageFilter.GaussianBlur(big * 0.03))

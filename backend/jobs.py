@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
-from themes import resolve_theme
+from themes import choose_theme, resolve_theme
 from video_analyzer import VideoAnalysis, analyse_video
 from puter_integration import PuterClient
 from schemas import ClipInfo, EditPlan, JobStage, JobStatus
@@ -240,10 +240,9 @@ class JobManager:
             if analyses and analyses[0].vision_error:
                 self._append_warnings(job_id, [f"Vision pass: {analyses[0].vision_error}"])
 
-            theme = resolve_theme(
-                analyses[0].suggested_theme
-                if (request.theme in ("", "auto", None) and analyses)
-                else request.theme
+            theme = (
+                choose_theme(analyses[0], request.theme)
+                if analyses else resolve_theme(request.theme)
             )
             self._update(
                 job_id,

@@ -185,3 +185,53 @@ def resolve_theme(name: Optional[str]) -> Theme:
 
 def theme_keys() -> List[str]:
     return list(THEMES)
+
+
+# Content types that decide the theme on their own: a vision model reading the
+# mood of one frame as "cute playful" must not turn an anime fight edit into a
+# bouncy pastel edit.
+_CONTENT_THEME: Dict[str, str] = {
+    "anime_edit": "anime_edits",
+    "gaming": "anime_edits",
+    "sports": "anime_edits",
+    "dance": "playful",
+    "meme": "playful",
+    "food": "playful",
+    "nature": "normal",
+    "tutorial": "normal",
+    "product": "normal",
+    "vlog": "normal",
+}
+
+
+def choose_theme(analysis: object, requested: Optional[str] = None) -> Theme:
+    """Pick the editing mode from every signal, not just the vision model's guess.
+
+    Priority: an explicit user choice, then the content type (a hard fact about
+    the footage), then darkness, then the vision model's suggestion, then the
+    measured energy.
+    """
+    if requested and requested.strip().lower() not in ("", "auto"):
+        return resolve_theme(requested)
+
+    content = str(getattr(analysis, "content_type", "") or "").strip().lower()
+    brightness = float(getattr(analysis, "brightness", 0.5) or 0.5)
+    energy = str(getattr(analysis, "energy", "medium") or "medium").lower()
+    suggested = str(getattr(analysis, "suggested_theme", "") or "").strip().lower()
+
+    if content in _CONTENT_THEME:
+        theme = resolve_theme(_CONTENT_THEME[content])
+        # Very dark footage still wins for horror-leaning content.
+        if brightness < 0.16 and content not in ("anime_edit", "gaming"):
+            return resolve_theme("haunted")
+        return theme
+
+    if brightness < 0.22:
+        return resolve_theme("haunted")
+    if suggested in THEMES or suggested in _ALIASES:
+        return resolve_theme(suggested)
+    if energy == "high":
+        return resolve_theme("anime_edits")
+    if brightness > 0.62:
+        return resolve_theme("playful")
+    return resolve_theme(DEFAULT_THEME)
