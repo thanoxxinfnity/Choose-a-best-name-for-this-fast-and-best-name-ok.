@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- API keys live in EncryptedSharedPreferences and must never leave the
+         device through a backup: the master key is not backed up with them. -->
+    <exclude domain="sharedpref" path="aivideo_secure_prefs.xml" />
+</full-backup-content>

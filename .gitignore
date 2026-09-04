@@ -1,0 +1,27 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+backend/data/
+*.egg-info/
+
+# --- Android / Gradle -------------------------------------------------------
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.keystore
+captures/
+.cxx/
+
+# --- IDE --------------------------------------------------------------------
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# --- Media scratch ----------------------------------------------------------
+*.mp4.tmp

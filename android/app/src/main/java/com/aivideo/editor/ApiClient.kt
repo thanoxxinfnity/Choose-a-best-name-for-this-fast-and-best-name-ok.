@@ -1,0 +1,391 @@
+package com.aivideo.editor
+
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import okhttp3.Headers
+import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okio.BufferedSink
+import okio.source
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.util.concurrent.TimeUnit
+
+// ---------------------------------------------------------------------------
+// Wire models (mirrors backend/schemas.py)
+// ---------------------------------------------------------------------------
+
+@Serializable
+data class HealthDto(
+    val status: String = "unknown",
+    val version: String = "",
+    val ffmpeg: Boolean = false,
+    val rembg: Boolean = false,
+    val whisper: Boolean = false,
+    @SerialName("puter_configured") val puterConfigured: Boolean = false,
+    @SerialName("nim_configured") val nimConfigured: Boolean = false,
+    @SerialName("active_jobs") val activeJobs: Int = 0,
+)
+
+@Serializable
+data class ClipInfoDto(
+    val filename: String = "",
+    val duration: Double = 0.0,
+    val width: Int = 0,
+    val height: Int = 0,
+    val fps: Double = 0.0,
+    @SerialName("has_audio") val hasAudio: Boolean = false,
+)
+
+@Serializable
+data class JobCreatedDto(
+    @SerialName("job_id") val jobId: String,
+    val stage: String = "queued",
+    @SerialName("status_url") val statusUrl: String = "",
+    val message: String = "",
+)
+
+@Serializable
+data class JobStatusDto(
+    @SerialName("job_id") val jobId: String,
+    val stage: String = "queued",
+    val progress: Double = 0.0,
+    val message: String = "",
+    val error: String? = null,
+    val prompt: String = "",
+    @SerialName("youtube_url") val youtubeUrl: String? = null,
+    val clips: List<ClipInfoDto> = emptyList(),
+    val plan: JsonElement? = null,
+    @SerialName("output_filename") val outputFilename: String? = null,
+    @SerialName("output_size_bytes") val outputSizeBytes: Long? = null,
+    @SerialName("duration_seconds") val durationSeconds: Double? = null,
+    val warnings: List<String> = emptyList(),
+) {
+    val isCompleted: Boolean get() = stage == "completed"
+    val isFailed: Boolean get() = stage == "failed" || stage == "cancelled"
+    val isTerminal: Boolean get() = isCompleted || isFailed
+}
+
+/** A clip chosen in the picker, ready to be uploaded. */
+data class SelectedClip(
+    val uri: Uri,
+    val displayName: String,
+    val sizeBytes: Long,
+    val mimeType: String,
+)
+
+/**
+ * All HTTP traffic between the app and the FastAPI backend.
+ *
+ * Every call reads the backend URL and the API keys from [SecureStore] at call
+ * time, so changing them in Settings takes effect immediately. Keys are sent as
+ * `X-Puter-Key` / `X-NIM-Key` / `X-YouTube-Token` headers and are never written
+ * to disk by the backend.
+ *
+ * All methods block; call them from `Dispatchers.IO`.
+ */
+object ApiClient {
+
+    private const val UPLOAD_CHUNK = 128 * 1024
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        explicitNulls = false
+        coerceInputValues = true
+    }
+
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.MINUTES)
+            .writeTimeout(30, TimeUnit.MINUTES) // large multi-clip uploads
+            .callTimeout(0, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
+    // ------------------------------------------------------------------ urls
+    fun baseUrl(context: Context): String = SecureStore.backendUrl(context)
+
+    fun streamUrl(context: Context, jobId: String): String =
+        "${baseUrl(context)}/api/v1/jobs/$jobId/stream"
+
+    fun downloadUrl(context: Context, jobId: String): String =
+        "${baseUrl(context)}/api/v1/jobs/$jobId/download"
+
+    private fun authHeaders(context: Context): Headers = Headers.Builder().apply {
+        SecureStore.puterKey(context).takeIf { it.isNotBlank() }?.let { add("X-Puter-Key", it) }
+        SecureStore.nvidiaNimKey(context).takeIf { it.isNotBlank() }?.let { add("X-NIM-Key", it) }
+        SecureStore.youtubeToken(context).takeIf { it.isNotBlank() }?.let { add("X-YouTube-Token", it) }
+        add("Accept", "application/json")
+    }.build()
+
+    // --------------------------------------------------------------- health
+    fun checkHealth(context: Context): Result<HealthDto> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/health")
+            .headers(authHeaders(context))
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(HealthDto.serializer(), body)
+        }
+    }
+
+    // --------------------------------------------------------------- render
+    fun submitRender(
+        context: Context,
+        clips: List<SelectedClip>,
+        prompt: String,
+        youtubeUrl: String?,
+        targetDurationSeconds: Float?,
+        captionsEnabled: Boolean,
+        voiceAccent: String,
+        maxStickers: Int = 4,
+        maxInpaints: Int = 2,
+        onProgress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): Result<JobCreatedDto> = runCatching {
+        require(clips.isNotEmpty()) { "Select at least one video clip." }
+        require(prompt.isNotBlank()) { "Describe the edit you want." }
+
+        val totalBytes = clips.sumOf { it.sizeBytes.coerceAtLeast(0L) }
+        var uploadedSoFar = 0L
+
+        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            addFormDataPart("prompt", prompt.trim())
+            youtubeUrl?.takeIf { it.isNotBlank() }?.let { addFormDataPart("youtube_url", it.trim()) }
+            targetDurationSeconds?.let { addFormDataPart("target_duration", it.toInt().toString()) }
+            addFormDataPart("enable_captions", captionsEnabled.toString())
+            addFormDataPart("voice_accent", voiceAccent)
+            addFormDataPart("max_stickers", maxStickers.toString())
+            addFormDataPart("max_inpaints", maxInpaints.toString())
+
+            clips.forEach { clip ->
+                val body = UriRequestBody(
+                    context = context,
+                    uri = clip.uri,
+                    mediaType = clip.mimeType.toMediaTypeOrNull() ?: "video/mp4".toMediaType(),
+                    declaredLength = clip.sizeBytes,
+                ) { deltaBytes ->
+                    uploadedSoFar += deltaBytes
+                    onProgress(uploadedSoFar, totalBytes)
+                }
+                addFormDataPart("videos", clip.displayName, body)
+            }
+        }.build()
+
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/render")
+            .headers(authHeaders(context))
+            .post(multipart)
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(JobCreatedDto.serializer(), body)
+        }
+    }
+
+    fun getJob(context: Context, jobId: String): Result<JobStatusDto> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/jobs/$jobId")
+            .headers(authHeaders(context))
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(JobStatusDto.serializer(), body)
+        }
+    }
+
+    fun cancelJob(context: Context, jobId: String): Result<Unit> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/jobs/$jobId/cancel")
+            .headers(authHeaders(context))
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful && response.code != 409) {
+                throw IOException(errorMessage(response, response.body?.string().orEmpty()))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- download
+    /**
+     * Streams the finished high quality MP4 into the device gallery
+     * (`Movies/AI Video Editor/`) and returns its content [Uri].
+     */
+    fun downloadToGallery(
+        context: Context,
+        jobId: String,
+        fileName: String = "ai_edit_$jobId.mp4",
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): Result<Uri> = runCatching {
+        val request = Request.Builder()
+            .url(downloadUrl(context, jobId))
+            .headers(authHeaders(context))
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException(errorMessage(response, response.body?.string().orEmpty()))
+            }
+            val body = response.body ?: throw IOException("Empty response body")
+            val total = body.contentLength()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                val values = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/AI Video Editor")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+                val resolver = context.contentResolver
+                val uri = resolver.insert(collection, values)
+                    ?: throw IOException("MediaStore refused to create the file")
+                try {
+                    resolver.openOutputStream(uri)?.use { output ->
+                        copyWithProgress(body.byteStream(), output, total, onProgress)
+                    } ?: throw IOException("Could not open the output stream")
+                    values.clear()
+                    values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                    uri
+                } catch (error: Throwable) {
+                    resolver.delete(uri, null, null)
+                    throw error
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val directory = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                    "AI Video Editor",
+                )
+                if (!directory.exists() && !directory.mkdirs()) {
+                    throw IOException("Could not create ${directory.absolutePath}")
+                }
+                val file = File(directory, fileName)
+                FileOutputStream(file).use { output ->
+                    copyWithProgress(body.byteStream(), output, total, onProgress)
+                }
+                android.media.MediaScannerConnection.scanFile(
+                    context, arrayOf(file.absolutePath), arrayOf("video/mp4"), null,
+                )
+                Uri.fromFile(file)
+            }
+        }
+    }
+
+    private fun copyWithProgress(
+        input: java.io.InputStream,
+        output: OutputStream,
+        total: Long,
+        onProgress: (Long, Long) -> Unit,
+    ) {
+        val buffer = ByteArray(UPLOAD_CHUNK)
+        var copied = 0L
+        var lastReport = 0L
+        input.use { stream ->
+            while (true) {
+                val read = stream.read(buffer)
+                if (read <= 0) break
+                output.write(buffer, 0, read)
+                copied += read
+                if (copied - lastReport > 512 * 1024) {
+                    lastReport = copied
+                    onProgress(copied, total)
+                }
+            }
+        }
+        output.flush()
+        onProgress(copied, if (total > 0) total else copied)
+    }
+
+    // ---------------------------------------------------------------- utils
+    private fun errorMessage(response: Response, body: String): String {
+        val detail = runCatching {
+            val element = json.parseToJsonElement(body)
+            (element as? kotlinx.serialization.json.JsonObject)
+                ?.get("detail")?.toString()?.trim('"')
+        }.getOrNull()
+        return "HTTP ${response.code}: ${detail ?: body.take(300).ifBlank { response.message }}"
+    }
+
+    /** Reads display name, size and MIME type for a picked content:// video. */
+    fun describeUri(context: Context, uri: Uri): SelectedClip {
+        var name = "clip.mp4"
+        var size = -1L
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (cursor.moveToFirst()) {
+                if (nameIndex >= 0) name = cursor.getString(nameIndex) ?: name
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex)
+            }
+        }
+        val mime = context.contentResolver.getType(uri)
+            ?: MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+            ?: "video/mp4"
+        if (!name.contains('.')) {
+            val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "mp4"
+            name = "$name.$extension"
+        }
+        return SelectedClip(uri = uri, displayName = name, sizeBytes = size, mimeType = mime)
+    }
+}
+
+/** Streams a `content://` video into the multipart request, reporting progress. */
+private class UriRequestBody(
+    private val context: Context,
+    private val uri: Uri,
+    private val mediaType: MediaType,
+    private val declaredLength: Long,
+    private val onBytesWritten: (Long) -> Unit,
+) : RequestBody() {
+
+    override fun contentType(): MediaType = mediaType
+
+    override fun contentLength(): Long = if (declaredLength > 0) declaredLength else -1L
+
+    override fun writeTo(sink: BufferedSink) {
+        val stream = context.contentResolver.openInputStream(uri)
+            ?: throw IOException("Cannot open $uri")
+        stream.source().use { source ->
+            val buffer = okio.Buffer()
+            while (true) {
+                val read = source.read(buffer, 128 * 1024L)
+                if (read == -1L) break
+                sink.write(buffer, read)
+                onBytesWritten(read)
+            }
+        }
+    }
+}

@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# AI Video Editor - FastAPI backend requirements
+# Python 3.10 - 3.11 recommended (faster-whisper / onnxruntime wheels)
+#
+# Versions below are the ones this pipeline was verified against; the renderer
+# also supports the MoviePy 1.x API if you have to pin `moviepy==1.0.3`.
+# ---------------------------------------------------------------------------
+
+# --- Web framework -----------------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- HTTP clients (Puter.js REST + NVIDIA NIM REST) --------------------------
+requests==2.32.3
+httpx==0.28.1
+
+# --- AI sticker background removal (transparent PNG) -------------------------
+rembg==2.0.61
+onnxruntime==1.20.1
+
+# --- Computer vision / frame extraction for Puter inpainting -----------------
+opencv-python==4.10.0.84
+numpy==1.26.4
+Pillow==10.4.0
+
+# --- Rendering pipeline ------------------------------------------------------
+moviepy==2.1.2
+imageio==2.36.1
+imageio-ffmpeg==0.5.1
+proglog==0.1.10
+
+# --- Word level animated captions -------------------------------------------
+faster-whisper==1.1.0
+
+# --- YouTube reference ingestion --------------------------------------------
+yt-dlp==2024.12.13
+
+# --- Tests (optional) --------------------------------------------------------
+pytest==8.3.4
+
+# NOTE: the system must also provide the `ffmpeg` and `ffprobe` binaries.
+#   Debian/Ubuntu : sudo apt-get install -y ffmpeg
+#   macOS         : brew install ffmpeg
+#
+# Headless servers with no GL stack can swap opencv-python for
+# opencv-python-headless (same API, no libGL dependency).
