@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
+from export_presets import check_source_headroom, describe_cost, resolve_preset
 from micro_features import apply_micro_features
 from themes import choose_theme, resolve_theme
 from video_analyzer import VideoAnalysis, analyse_video
@@ -71,6 +72,7 @@ class JobRequest:
     auto_silence_cut: bool = False
     auto_beat_sync: bool = False
     auto_reframe: bool = False
+    export_preset: str = "1080p60"
     enable_intro: bool = False
     enable_outro: bool = False
     max_stickers: int = 4
@@ -255,6 +257,19 @@ class JobManager:
                 choose_theme(analyses[0], request.theme)
                 if analyses else resolve_theme(request.theme)
             )
+
+            export = resolve_preset(request.export_preset)
+            headroom = check_source_headroom(
+                export, [(clip.width, clip.height) for clip in status.clips]
+            )
+            notes = [headroom] if headroom else []
+            cost = describe_cost(export)
+            if cost > 1.5:
+                notes.append(
+                    f"{export.label} moves {cost:.1f}x the pixels of a 1080p60 render, "
+                    f"so expect it to take roughly that much longer."
+                )
+            self._append_warnings(job_id, notes)
             self._update(
                 job_id,
                 theme=theme.key,
@@ -348,6 +363,7 @@ class JobManager:
                 theme=theme.key,
                 analyses=analyses,
                 auto_reframe=request.auto_reframe,
+                export=export.key,
             )
             output = self.output_path(job_id)
             renderer.render(output)
@@ -359,9 +375,13 @@ class JobManager:
             info = probe_clip(output)
             self._update(
                 job_id,
+                export_preset=export.key,
+                output_width=int(info.get("width") or 0),
+                output_height=int(info.get("height") or 0),
+                output_fps=float(info.get("fps") or 0.0),
                 stage=JobStage.COMPLETED,
                 progress=1.0,
-                message=f"Done in {time.time() - started:.0f}s",
+                message=f"Done in {time.time() - started:.0f}s ({export.resolution} @ {export.fps}fps)",
                 finished_at=time.time(),
                 output_filename=output.name,
                 output_size_bytes=output.stat().st_size,

@@ -66,6 +66,19 @@ data class ThemeDto(
 )
 
 @Serializable
+data class ExportPresetDto(
+    val key: String,
+    val label: String,
+    val width: Int = 0,
+    val height: Int = 0,
+    val fps: Int = 60,
+    val codec: String = "h264",
+    val bitrate: String = "",
+    val vertical: Boolean = true,
+    @SerialName("relative_cost") val relativeCost: Double = 1.0,
+)
+
+@Serializable
 data class VoiceDto(
     val key: String,
     val label: String,
@@ -95,6 +108,10 @@ data class JobStatusDto(
     val plan: JsonElement? = null,
     @SerialName("output_filename") val outputFilename: String? = null,
     @SerialName("output_size_bytes") val outputSizeBytes: Long? = null,
+    @SerialName("export_preset") val exportPreset: String = "1080p60",
+    @SerialName("output_width") val outputWidth: Int? = null,
+    @SerialName("output_height") val outputHeight: Int? = null,
+    @SerialName("output_fps") val outputFps: Double? = null,
     @SerialName("duration_seconds") val durationSeconds: Double? = null,
     val warnings: List<String> = emptyList(),
 ) {
@@ -192,6 +209,7 @@ object ApiClient {
         autoSilenceCut: Boolean = false,
         autoBeatSync: Boolean = false,
         autoReframe: Boolean = false,
+        exportPreset: String = "1080p60",
         onProgress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result<JobCreatedDto> = runCatching {
         require(clips.isNotEmpty()) { "Select at least one video clip." }
@@ -217,6 +235,7 @@ object ApiClient {
             addFormDataPart("auto_silence_cut", autoSilenceCut.toString())
             addFormDataPart("auto_beat_sync", autoBeatSync.toString())
             addFormDataPart("auto_reframe", autoReframe.toString())
+            addFormDataPart("export_preset", exportPreset)
 
             clips.forEach { clip ->
                 val body = UriRequestBody(
@@ -254,6 +273,20 @@ object ApiClient {
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw IOException(errorMessage(response, body))
             json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(ThemeDto.serializer()), body)
+        }
+    }
+
+    /** Export presets the encoder supports, up to 4K 60fps. */
+    fun listExportPresets(context: Context): Result<List<ExportPresetDto>> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/export-presets")
+            .headers(authHeaders(context)).get().build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(
+                kotlinx.serialization.builtins.ListSerializer(ExportPresetDto.serializer()), body,
+            )
         }
     }
 

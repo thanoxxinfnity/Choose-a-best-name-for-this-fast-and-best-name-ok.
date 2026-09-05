@@ -412,8 +412,12 @@ class JobStatus(BaseModel):
     clips: List[ClipInfo] = Field(default_factory=list)
     analysis: List[Dict[str, Any]] = Field(default_factory=list)
     plan: Optional[EditPlan] = None
+    export_preset: str = "1080p60"
     output_filename: Optional[str] = None
     output_size_bytes: Optional[int] = None
+    output_width: Optional[int] = None
+    output_height: Optional[int] = None
+    output_fps: Optional[float] = None
     duration_seconds: Optional[float] = None
     preview_url: Optional[str] = None
     download_url: Optional[str] = None
@@ -456,6 +460,29 @@ class VoiceInfo(BaseModel):
     deep: bool = False
 
 
+class VideoProviderInfo(BaseModel):
+    key: str
+    label: str
+    text_to_video: bool
+    image_to_video: bool
+    models: List[str] = Field(default_factory=list)
+    requires_key: bool = True
+    configured: bool = False
+    notes: str = ""
+
+
+class ExportPresetInfo(BaseModel):
+    key: str
+    label: str
+    width: int
+    height: int
+    fps: int
+    codec: str
+    bitrate: str
+    vertical: bool
+    relative_cost: float
+
+
 class ThemeInfo(BaseModel):
     key: str
     name: str
@@ -470,6 +497,7 @@ class TextToVideoRequest(BaseModel):
     resolution: str = "720x1280"
     negative_prompt: str = ""
     seed: Optional[int] = None
+    provider: Optional[str] = None
 
 
 class ImageToVideoRequest(BaseModel):

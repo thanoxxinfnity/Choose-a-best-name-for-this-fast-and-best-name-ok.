@@ -361,6 +361,35 @@ fun EditorScreen(
                 }
 
                 HorizontalDivider()
+                Text("Export quality", style = MaterialTheme.typography.titleSmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val presets = state.exportPresets.ifEmpty {
+                        listOf(ExportPresetDto(key = "1080p60", label = "1080p 60fps"))
+                    }
+                    presets.forEach { preset ->
+                        FilterChip(
+                            selected = state.exportPreset == preset.key,
+                            onClick = { viewModel.setExportPreset(preset.key) },
+                            label = { Text("${preset.width}x${preset.height} ${preset.fps}") },
+                        )
+                    }
+                }
+                state.exportPresets.firstOrNull { it.key == state.exportPreset }?.let { preset ->
+                    Text(
+                        "${preset.label} - ${preset.codec.uppercase()} @ ${preset.bitrate}" +
+                            if (preset.relativeCost > 1.5) {
+                                "  (~${preset.relativeCost}x render time)"
+                            } else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (preset.relativeCost > 1.5) {
+                            MaterialTheme.colorScheme.secondary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+
+                HorizontalDivider()
                 Text("Auto edit", style = MaterialTheme.typography.titleSmall)
                 ToggleRow(
                     title = "Auto silence-cut",
@@ -432,9 +461,15 @@ fun EditorScreen(
                     SectionCard(title = "4. Preview") {
                         VideoPreview(url = previewUrl)
                         state.job?.durationSeconds?.let { duration ->
+                            val job = state.job
+                            val geometry = if ((job?.outputWidth ?: 0) > 0) {
+                                "${job?.outputWidth}x${job?.outputHeight} @ " +
+                                    "${(job?.outputFps ?: 0.0).toInt()}fps"
+                            } else "rendering"
                             Text(
-                                "%.1fs - %s - 1080x1920 @ 60fps".format(
-                                    Locale.US, duration, formatBytes(state.job?.outputSizeBytes ?: 0L),
+                                "%.1fs - %s - %s".format(
+                                    Locale.US, duration,
+                                    formatBytes(job?.outputSizeBytes ?: 0L), geometry,
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

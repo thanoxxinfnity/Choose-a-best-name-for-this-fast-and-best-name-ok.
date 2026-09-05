@@ -57,6 +57,7 @@ from puter_video import (
 from schemas import (
     ClipInfo,
     EditPlan,
+    ExportPresetInfo,
     HealthResponse,
     ImageToVideoRequest,
     JobCreatedResponse,
@@ -67,9 +68,17 @@ from schemas import (
     TextToVideoRequest,
     ThemeInfo,
     TtsRequest,
+    VideoProviderInfo,
     VoiceInfo,
 )
+from export_presets import PRESETS, describe_cost, resolve_preset
 from themes import THEMES, resolve_theme
+from video_providers import (
+    ProviderError,
+    best_available,
+    describe_providers,
+    get_provider,
+)
 from voices import VOICE_PROFILES, resolve_voice
 from video_analyzer import analyse_video
 from video_renderer import probe_clip, whisper_available
@@ -173,6 +182,8 @@ def health() -> HealthResponse:
             "i2v_model": IMAGE_TO_VIDEO_MODEL,
             "themes": list(THEMES),
             "voices": list(VOICE_PROFILES),
+            "export_presets": list(PRESETS),
+            "max_export": "3840x2160 / 2160x3840 @ 60fps",
             "max_upload_mb": settings.max_upload_mb,
         },
     )
@@ -202,6 +213,7 @@ async def create_render_job(
     auto_silence_cut: bool = Form(default=False),
     auto_beat_sync: bool = Form(default=False),
     auto_reframe: bool = Form(default=False),
+    export_preset: str = Form(default="1080p60"),
     credentials: JobCredentials = Depends(get_credentials),
 ) -> JobCreatedResponse:
     if not videos:
@@ -266,13 +278,15 @@ async def create_render_job(
             auto_silence_cut=auto_silence_cut,
             auto_beat_sync=auto_beat_sync,
             auto_reframe=auto_reframe,
+            export_preset=export_preset,
         )
     )
+    export = resolve_preset(export_preset)
     return JobCreatedResponse(
         job_id=status.job_id,
         stage=status.stage,
         status_url=f"/api/v1/jobs/{status.job_id}",
-        message=f"Rendering {len(saved)} clip(s) at {settings.resolution} {settings.output_fps}fps",
+        message=f"Rendering {len(saved)} clip(s) at {export.label}",
     )
 
 
@@ -474,6 +488,25 @@ def list_themes() -> List[ThemeInfo]:
     ]
 
 
+@app.get("/api/v1/export-presets", response_model=List[ExportPresetInfo])
+def list_export_presets() -> List[ExportPresetInfo]:
+    """Everything the encoder can actually output, up to 4K 60fps."""
+    return [
+        ExportPresetInfo(
+            key=preset.key,
+            label=preset.label,
+            width=preset.width,
+            height=preset.height,
+            fps=preset.fps,
+            codec=preset.codec,
+            bitrate=preset.video_bitrate(),
+            vertical=preset.is_vertical,
+            relative_cost=round(describe_cost(preset), 2),
+        )
+        for preset in PRESETS.values()
+    ]
+
+
 @app.get("/api/v1/voices", response_model=List[VoiceInfo])
 def list_voices() -> List[VoiceInfo]:
     """Voice profiles the voiceover can use, shaping included."""
@@ -515,26 +548,48 @@ async def analyze_upload(
         path.unlink(missing_ok=True)
 
 
+@app.get("/api/v1/video/providers", response_model=List[VideoProviderInfo])
+def list_video_providers(credentials: JobCredentials = Depends(get_credentials)):
+    """Which generation backends exist and which are usable right now."""
+    return [
+        VideoProviderInfo(**vars(info))
+        for info in describe_providers({"puter": credentials.resolved_puter_key()})
+    ]
+
+
 @app.post("/api/v1/video/text-to-video")
 def text_to_video(
     payload: TextToVideoRequest = Body(...),
     credentials: JobCredentials = Depends(get_credentials),
 ):
-    """Generate a clip from a prompt with wan-ai/wan2.2-t2v-a14b."""
-    client = PuterVideoClient(api_key=credentials.resolved_puter_key())
+    """Generate a clip from a prompt (Puter wan2.2-t2v-a14b by default)."""
+    keys = {"puter": credentials.resolved_puter_key()}
+    provider = (
+        get_provider(payload.provider, api_key=keys.get(payload.provider or "puter", ""))
+        if payload.provider
+        else best_available(keys, need_text_to_video=True)
+    )
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No text-to-video provider is configured. Add a Puter.js API key "
+                   "in Settings, or use image-to-video, which works offline.",
+        )
     destination = Path(tempfile.mkdtemp(prefix="t2v-", dir=settings.cache_dir)) / "generated.mp4"
     try:
-        result = client.text_to_video(
+        result = provider.text_to_video(
             payload.prompt, destination,
             seconds=payload.seconds, resolution=payload.resolution,
-            model=settings.puter_t2v_model,
-            negative_prompt=payload.negative_prompt, seed=payload.seed,
         )
-    except PuterError as exc:
+    except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return FileResponse(
         result.path, media_type="video/mp4", filename="moja_ai_t2v.mp4",
-        headers={"X-Moja-Model": result.model, "X-Moja-Elapsed": f"{result.elapsed:.1f}"},
+        headers={
+            "X-Moja-Provider": result.provider,
+            "X-Moja-Model": result.model,
+            "X-Moja-Elapsed": f"{result.elapsed:.1f}",
+        },
     )
 
 
@@ -544,27 +599,38 @@ async def image_to_video(
     prompt: str = Form(default=""),
     seconds: float = Form(default=5.0),
     motion_strength: float = Form(default=0.7),
+    provider_key: Optional[str] = Form(default=None),
     credentials: JobCredentials = Depends(get_credentials),
 ):
-    """Animate a still with wan-ai/wan2.2-i2v-a14b."""
+    """Animate a still. Falls back to offline motion when no AI key is set."""
     workspace = Path(tempfile.mkdtemp(prefix="i2v-", dir=settings.cache_dir))
     source = workspace / (Path(image.filename or "frame.png").name or "frame.png")
     with source.open("wb") as handle:
         while chunk := await image.read(CHUNK_SIZE):
             handle.write(chunk)
 
-    client = PuterVideoClient(api_key=credentials.resolved_puter_key())
+    keys = {"puter": credentials.resolved_puter_key()}
+    provider = (
+        get_provider(provider_key, api_key=keys.get(provider_key or "puter", ""))
+        if provider_key
+        else best_available(keys)
+    )
+    if provider is None:
+        raise HTTPException(status_code=503, detail="No image-to-video provider available.")
     try:
-        result = client.image_to_video(
+        result = provider.image_to_video(
             source, prompt, workspace / "generated.mp4",
-            seconds=seconds, model=settings.puter_i2v_model,
-            motion_strength=motion_strength,
+            seconds=seconds, motion_strength=motion_strength,
         )
-    except PuterError as exc:
+    except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return FileResponse(
         result.path, media_type="video/mp4", filename="moja_ai_i2v.mp4",
-        headers={"X-Moja-Model": result.model, "X-Moja-Elapsed": f"{result.elapsed:.1f}"},
+        headers={
+            "X-Moja-Provider": result.provider,
+            "X-Moja-Model": result.model,
+            "X-Moja-Elapsed": f"{result.elapsed:.1f}",
+        },
     )
 
 

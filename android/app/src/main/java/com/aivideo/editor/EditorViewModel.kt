@@ -33,6 +33,8 @@ data class EditorUiState(
     val autoSilenceCut: Boolean = false,
     val autoBeatSync: Boolean = false,
     val autoReframe: Boolean = false,
+    val exportPreset: String = "1080p60",
+    val exportPresets: List<ExportPresetDto> = emptyList(),
     val themes: List<ThemeDto> = emptyList(),
     val voices: List<VoiceDto> = emptyList(),
 
@@ -73,6 +75,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             captionsEnabled = SecureStore.captionsEnabled(application),
             voiceAccent = SecureStore.voiceAccent(application),
             enableVoiceover = SecureStore.voiceoverEnabled(application),
+            exportPreset = SecureStore.exportPreset(application),
         )
     )
     val state: StateFlow<EditorUiState> = _state.asStateFlow()
@@ -145,6 +148,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setAutoReframe(value: Boolean) = _state.update { it.copy(autoReframe = value) }
 
+    fun setExportPreset(value: String) {
+        SecureStore.write(context, SecureStore.KEY_EXPORT_PRESET, value)
+        _state.update { it.copy(exportPreset = value) }
+    }
+
     fun setMaxStickers(value: Int) = _state.update { it.copy(maxStickers = value) }
 
     fun setMaxInpaints(value: Int) = _state.update { it.copy(maxInpaints = value) }
@@ -165,6 +173,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             themes.onSuccess { value -> _state.update { it.copy(themes = value) } }
             val voices = withContext(Dispatchers.IO) { ApiClient.listVoices(context) }
             voices.onSuccess { value -> _state.update { it.copy(voices = value) } }
+            val presets = withContext(Dispatchers.IO) { ApiClient.listExportPresets(context) }
+            presets.onSuccess { value -> _state.update { it.copy(exportPresets = value) } }
         }
     }
 
@@ -210,6 +220,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     autoSilenceCut = current.autoSilenceCut,
                     autoBeatSync = current.autoBeatSync,
                     autoReframe = current.autoReframe,
+                    exportPreset = current.exportPreset,
                 ) { uploaded, total ->
                     _state.update { it.copy(uploadedBytes = uploaded, totalBytes = total) }
                 }

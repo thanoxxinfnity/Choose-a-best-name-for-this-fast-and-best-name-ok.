@@ -82,6 +82,7 @@ object SecureStore {
     const val KEY_VOICE_ACCENT = "voice_accent"
     const val KEY_CAPTIONS = "captions_enabled"
     const val KEY_VOICEOVER = "voiceover_enabled"
+    const val KEY_EXPORT_PRESET = "export_preset"
 
     @Volatile
     private var cached: SharedPreferences? = null
@@ -147,6 +148,9 @@ object SecureStore {
 
     fun voiceoverEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_VOICEOVER, true)
+
+    fun exportPreset(context: Context): String =
+        read(context, KEY_EXPORT_PRESET).ifBlank { "1080p60" }
 
     private fun read(context: Context, key: String): String =
         prefs(context).getString(key, "").orEmpty().trim()

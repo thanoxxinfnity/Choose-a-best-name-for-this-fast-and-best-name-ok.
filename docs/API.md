@@ -113,6 +113,8 @@ without downloading the whole file.
 |---|---|---|
 | `GET` | `/api/v1/themes` | the four editing modes and their pacing/shake |
 | `GET` | `/api/v1/voices` | voice profiles, `deep: true` marks the deep/dark narrators |
+| `GET` | `/api/v1/export-presets` | output presets up to 4K 60fps, with relative render cost |
+| `GET` | `/api/v1/video/providers` | generation backends and which are usable right now |
 | `POST` | `/api/v1/analyze` | multipart `video` -> subjects, art style, mood, energy, scene cuts, motion peaks, palette, beats, BPM, silence spans, recommended theme |
 
 `POST /api/v1/render` also accepts:
@@ -129,6 +131,7 @@ without downloading the whole file.
 | `auto_silence_cut` | `false` | drop detected dead air from the timeline |
 | `auto_beat_sync` | `false` | snap cuts onto the nearest musical onset |
 | `auto_reframe` | `false` | track the subject so the 9:16 crop follows it |
+| `export_preset` | `1080p60` | any key from `/api/v1/export-presets`, up to `4k60` |
 
 ## AI video generation (Puter.js wan2.2)
 

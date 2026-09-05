@@ -41,6 +41,7 @@ from puter_video import (
     conform_generated_clip,
     extract_keyframe,
 )
+from export_presets import DEFAULT_PRESET, ExportPreset, resolve_preset
 from micro_features import ReframeTrack, plan_reframe
 from sticker_art import draw_sticker
 from themes import Theme, resolve_theme
@@ -487,7 +488,9 @@ class VideoRenderer:
         theme: Optional[str] = None,
         analyses: Optional[Sequence[Any]] = None,
         auto_reframe: bool = False,
+        export: Optional[str] = None,
     ) -> None:
+        self.export: ExportPreset = resolve_preset(export or DEFAULT_PRESET)
         self.theme: Theme = resolve_theme(theme)
         self.analyses = list(analyses or [])
         self.auto_reframe = auto_reframe
@@ -500,8 +503,13 @@ class VideoRenderer:
         self._progress = progress
         self.warnings: List[str] = []
 
-        self.width, self.height = plan.project_meta.size
-        self.fps = plan.project_meta.fps or settings.output_fps
+        # The export preset wins over whatever the planner wrote, so a 4K
+        # request is honoured end to end instead of being upscaled at the last
+        # step from a 1080p render.
+        self.width, self.height = self.export.width, self.export.height
+        self.fps = self.export.fps
+        plan.project_meta.resolution = self.export.resolution
+        plan.project_meta.fps = self.fps
         self.assets_dir = self.workspace / "assets"
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self._open_clips: List[Any] = []
@@ -1170,7 +1178,11 @@ class VideoRenderer:
             composite = _with_audio(composite, audio_clip)
         self._track(composite)
 
-        self.report(JobStage.ENCODING, 0.82, f"Encoding {self.width}x{self.height} @ {self.fps}fps")
+        self.report(
+            JobStage.ENCODING, 0.82,
+            f"Encoding {self.export.label} ({self.export.encoder()} @ "
+            f"{self.export.video_bitrate()})",
+        )
         self._write_video(composite, output_path, with_audio=True)
         self.report(JobStage.ENCODING, 0.98, "Encode finished")
         return output_path
@@ -1511,18 +1523,28 @@ class VideoRenderer:
     def _write_video(self, clip, destination: Path, with_audio: bool) -> None:
         destination = Path(destination)
         temp_audio = self.workspace / f"{destination.stem}-audio.m4a"
+        preset = self.export
+
         ffmpeg_params = [
             "-pix_fmt", "yuv420p",
-            "-crf", str(settings.x264_crf),
-            "-profile:v", "high",
-            "-level", "4.2",
+            "-crf", str(preset.crf),
             "-movflags", "+faststart",
         ]
+        if preset.codec == "hevc":
+            # hvc1 is the tag Apple players need to open an HEVC mp4 at all.
+            ffmpeg_params += ["-tag:v", "hvc1"]
+        else:
+            # Level 5.2 is required above 1080p60; 4.2 cannot carry 4K.
+            ffmpeg_params += [
+                "-profile:v", "high",
+                "-level", "5.2" if preset.pixels > 1920 * 1080 else "4.2",
+            ]
+
         kwargs: Dict[str, Any] = {
             "fps": self.fps,
-            "codec": "libx264",
-            "preset": settings.x264_preset,
-            "bitrate": settings.video_bitrate,
+            "codec": preset.encoder(),
+            "preset": preset.x264_preset,
+            "bitrate": preset.video_bitrate(),
             "ffmpeg_params": ffmpeg_params,
             "logger": None,
             "temp_audiofile": str(temp_audio),
@@ -1532,7 +1554,7 @@ class VideoRenderer:
             kwargs["threads"] = settings.ffmpeg_threads
         if with_audio and clip.audio is not None:
             kwargs["audio_codec"] = "aac"
-            kwargs["audio_bitrate"] = settings.audio_bitrate
+            kwargs["audio_bitrate"] = preset.audio_bitrate
         else:
             kwargs["audio"] = False
 

@@ -175,6 +175,65 @@ backend URL you configured; the backend never writes them to disk.
 The JSON contract Kimi K3 must emit is documented in `docs/PIPELINE.md` and
 enforced by `schemas.EditPlan`.
 
+### Export presets
+
+| Key | Output | Codec | Bitrate | Cost |
+|---|---|---|---|---|
+| `720p60` | 720x1280 60fps | H.264 | 6M | 0.4x |
+| `1080p60` | **1080x1920 60fps** (default) | H.264 | 12M | 1.0x |
+| `1440p60` | 1440x2560 60fps | H.264 | 22M | 1.8x |
+| `4k60` | **2160x3840 60fps** | H.264 | 50M | 4.0x |
+| `4k60_hevc` | 2160x3840 60fps | HEVC | 32M | 4.0x |
+| `4k30` | 2160x3840 30fps | H.264 | 25M | 2.0x |
+| `1080p60_wide` / `4k60_wide` | landscape 1920x1080 / 3840x2160 | H.264 | 12M / 50M | 1.0x / 4.0x |
+
+The timeline is rendered *at* the preset's resolution rather than upscaled at
+the end, so a 4K export is 4K wherever the source has the detail. Bitrate is
+derived from the pixel rate, not hardcoded; H.264 gets level 5.2 above 1080p60
+because 4.2 cannot carry 4K, and HEVC is tagged `hvc1` so Apple players will
+open it. Two honest warnings come back on the job: the relative render cost,
+and an upscale notice when the smallest source cannot fill the requested frame.
+
+### Audio enhancer
+
+| Profile | Target | Chain |
+|---|---|---|
+| `voice` | -14 LUFS | denoise, 90Hz-14kHz, de-esser, compressor, loudnorm |
+| `podcast` | -16 LUFS | heavier denoise, 100Hz high-pass, de-esser, compressor |
+| `music` | -13 LUFS | 25Hz high-pass, compressor |
+| `balanced` | -14 LUFS | 40Hz high-pass, compressor |
+| `off` | - | untouched |
+
+Loudness normalisation runs last, because everything before it changes the
+level it has to hit. Verified end to end: a -48.6 LUFS source lands within
+0.2 LU of every target.
+
+### Colour and background tools
+
+* **Colour pop** is vibrance, not saturation - the lift is proportional to each
+  pixel's remaining headroom, and skin hues are damped, so a shot pops without
+  faces going orange.
+* **Green-screen removal** keys in YCrCb chroma space, so shadows and uneven
+  lighting on the screen do not break the match, with green-spill suppression
+  on the subject edge.
+* **AI background removal** uses `rembg` at a sampled rate with masks
+  interpolated between key frames - segmenting every frame of a 60fps clip is
+  not affordable, and a silhouette moves far slower than the frame rate.
+
+### AI video providers
+
+Generation is behind a provider interface, so adding a service is one adapter
+class rather than a pipeline change:
+
+| Provider | t2v | i2v | Key |
+|---|---|---|---|
+| `puter` | yes (`wan2.2-t2v-a14b`) | yes (`wan2.2-i2v-a14b`) | required |
+| `local_motion` | no | yes (Ken Burns) | **none - works offline** |
+
+`local_motion` exists so the image-to-video button is never dead: with no key
+configured it still returns a real 1080x1920 clip, and a failed provider call
+degrades to one instead of to nothing.
+
 ### Auto edit micro-features
 
 All three run locally on the analysis pass - no API key, no model download.

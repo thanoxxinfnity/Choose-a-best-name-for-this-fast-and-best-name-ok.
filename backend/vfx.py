@@ -99,6 +99,83 @@ def colour_grade(
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def color_pop(frame: Frame, amount: float = 0.5, protect_skin: bool = True) -> Frame:
+    """Vibrance, not saturation.
+
+    Plain saturation blows out whatever is already colourful. Vibrance lifts the
+    *dull* pixels hardest and leaves saturated ones alone, which is what makes
+    a shot pop without turning faces orange - so skin hues are damped further
+    when ``protect_skin`` is set.
+    """
+    if amount <= 0.01:
+        return frame
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
+
+    # Headroom: 0 for an already saturated pixel, 1 for a grey one.
+    headroom = 1.0 - (saturation / 255.0)
+    boost = 1.0 + amount * headroom
+
+    if protect_skin:
+        # OpenCV hue is 0-179; skin sits roughly in 0-25 and 165-179.
+        skin = np.clip(1.0 - np.minimum(hue, 179.0 - hue) / 25.0, 0.0, 1.0)
+        boost = 1.0 + (boost - 1.0) * (1.0 - 0.6 * skin)
+
+    hsv[:, :, 1] = np.clip(saturation * boost, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+
+def chroma_key(
+    frame: Frame,
+    key_rgb: Tuple[int, int, int] = (0, 177, 64),
+    tolerance: float = 0.32,
+    softness: float = 0.12,
+    spill: float = 0.6,
+) -> np.ndarray:
+    """Green-screen removal. Returns RGBA with the key colour knocked out.
+
+    Keying happens in YCrCb chroma space rather than RGB, so shadows and
+    uneven lighting on the screen do not change the match the way brightness
+    differences would in RGB.
+    """
+    ycrcb = cv2.cvtColor(frame, cv2.COLOR_RGB2YCrCb).astype(np.float32)
+    key = cv2.cvtColor(
+        np.uint8([[list(key_rgb)]]), cv2.COLOR_RGB2YCrCb
+    ).astype(np.float32)[0][0]
+
+    distance = np.sqrt(
+        (ycrcb[:, :, 1] - key[1]) ** 2 + (ycrcb[:, :, 2] - key[2]) ** 2
+    ) / 180.0
+
+    inner = max(tolerance - softness, 0.0)
+    alpha = np.clip((distance - inner) / max(tolerance - inner, 1e-3), 0.0, 1.0)
+    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.2)
+
+    out = frame.astype(np.float32)
+    if spill > 0.01:
+        # Spill suppression: pull green down to the red/blue average where the
+        # subject picked up a colour cast from the screen.
+        green = out[:, :, 1]
+        limit = (out[:, :, 0] + out[:, :, 2]) / 2.0
+        excess = np.maximum(green - limit, 0.0) * spill
+        out[:, :, 1] = green - excess * alpha
+
+    rgba = np.dstack([np.clip(out, 0, 255).astype(np.uint8), (alpha * 255).astype(np.uint8)])
+    return rgba
+
+
+def composite_over(foreground_rgba: np.ndarray, background: Frame) -> Frame:
+    """Alpha-composite an RGBA frame over an opaque background."""
+    if background.shape[:2] != foreground_rgba.shape[:2]:
+        background = cv2.resize(
+            background, (foreground_rgba.shape[1], foreground_rgba.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    alpha = (foreground_rgba[:, :, 3].astype(np.float32) / 255.0)[:, :, None]
+    blended = foreground_rgba[:, :, :3].astype(np.float32) * alpha +         background.astype(np.float32) * (1.0 - alpha)
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
 _VIGNETTE_CACHE: dict = {}
 
 
@@ -210,9 +287,10 @@ def build_effect_chain(
     grade: Optional[dict] = None,
     vignette_strength: float = 0.0,
     bloom: float = 0.0,
+    pop: float = 0.0,
 ) -> Optional[Callable[[Frame, float], Frame]]:
     """Compose the per-frame effects a theme asks for into one callable."""
-    if shake is None and not grade and vignette_strength <= 0 and bloom <= 0:
+    if shake is None and not grade and vignette_strength <= 0 and bloom <= 0 and pop <= 0:
         return None
     seed = 0.0
 
@@ -228,6 +306,8 @@ def build_effect_chain(
                 out = rgb_split(out, split, angle=math.atan2(dy, dx) if (dx or dy) else 0.0)
         if grade:
             out = colour_grade(out, **grade)
+        if pop > 0:
+            out = color_pop(out, pop)
         if bloom > 0:
             out = glow_bloom(out, bloom)
         if vignette_strength > 0:
