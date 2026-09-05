@@ -2,14 +2,13 @@
 
 Models (per the product spec):
 
-* ``wan-ai/wan2.2-t2v-a14b`` - text to video
-* ``wan-ai/wan2.2-i2v-a14b`` - image to video
+* ``sora-2`` - text to video, and image to video with a seed frame
 
 Both go through the same driver endpoint the rest of the Puter integration
 uses::
 
     POST {PUTER_BASE_URL}/drivers/call
-    {"interface": "puter-video-generation", "driver": "wan-ai",
+    {"interface": "puter-video-generation", "driver": "openai-video-generation",
      "method": "generate", "args": {"model": ..., "prompt": ..., ...}}
 
 Video generation is slow, so the driver may answer either with the finished
@@ -31,19 +30,24 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
+import requests
 
 from config import settings
 from puter_integration import PuterClient, PuterError, _to_data_uri, ffmpeg_binary
 
 logger = logging.getLogger(__name__)
 
-TEXT_TO_VIDEO_MODEL = "wan-ai/wan2.2-t2v-a14b"
-IMAGE_TO_VIDEO_MODEL = "wan-ai/wan2.2-i2v-a14b"
+# Read from settings so there is one place the model is named. The wan2.2
+# ids this used to carry were never served here - the account's upstream
+# rejects them with a 401, which surfaces as an unhelpful HTTP 500.
+TEXT_TO_VIDEO_MODEL = settings.puter_t2v_model
+IMAGE_TO_VIDEO_MODEL = settings.puter_i2v_model
 
 # Keys a driver may use to hand back an async job handle.
 _JOB_KEYS = ("job_id", "id", "task_id", "request_id", "generation_id")
@@ -70,6 +74,7 @@ class PuterVideoClient(PuterClient):
         super().__init__(*args, **kwargs)
         # Video jobs can take minutes; do not inherit the image timeout.
         self.timeout = max(self.timeout, settings.puter_video_timeout)
+        self._home_cache: Optional[str] = None
 
     # ------------------------------------------------------------------ API
     def text_to_video(
@@ -149,6 +154,14 @@ class PuterVideoClient(PuterClient):
                 except Exception:
                     logger.debug("video progress hook raised", exc_info=True)
 
+        # The driver does not hand back the bytes. Asked for video/mp4 it
+        # returns a JSON-serialised Node stream object - an empty husk with no
+        # data in it - so the video is written to the account's own filesystem
+        # and read back from there instead. That is what puter_output_path is
+        # for, and it is the only route that actually yields a playable file.
+        remote = f"/{self._home()}/moja-ai-{uuid.uuid4().hex[:12]}.mp4"
+        args = {**args, "puter_output_path": remote}
+
         report(f"submitting {model}", 0.05)
         body, content_type, parsed = self.call_driver(
             settings.puter_video_interface,
@@ -163,16 +176,66 @@ class PuterVideoClient(PuterClient):
             report("queued, waiting for the render", 0.15)
             body, content_type, parsed = self._await_job(job_id, report)
 
-        video = self._resolve_media(body, content_type, parsed, "video")
+        try:
+            video = self._resolve_media(body, content_type, parsed, "video")
+        except PuterError:
+            # Expected on this driver: it answers with an empty stream husk
+            # rather than the bytes, so the file on the account is the payload.
+            video = b""
+        if not video:
+            report("fetching the rendered file", 0.9)
+            video = self._download(remote)
         if not video:
             raise PuterError("Puter video generation returned an empty payload.")
         output_path.write_bytes(video)
+        self._remove_remote(remote)
         report("downloaded", 1.0)
 
         return VideoGenerationResult(
             path=output_path, model=model, seconds=seconds,
             prompt=prompt, elapsed=time.time() - started,
         )
+
+    def _home(self) -> str:
+        """The account's own directory name, which is its username."""
+        if self._home_cache is None:
+            response = requests.get(
+                f"{self.base_url}/whoami",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            self._home_cache = str(response.json().get("username") or "").strip()
+            if not self._home_cache:
+                raise PuterError("Puter did not report a username to write the video under.")
+        return self._home_cache
+
+    def _download(self, remote_path: str) -> bytes:
+        """Read a file back off the account's filesystem."""
+        response = requests.get(
+            f"{self.base_url}/read",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            params={"path": remote_path},
+            timeout=settings.puter_video_timeout,
+        )
+        if response.status_code != 200:
+            raise PuterError(
+                f"Could not read the generated video back from {remote_path}: "
+                f"HTTP {response.status_code} {response.text[:160]}"
+            )
+        return response.content
+
+    def _remove_remote(self, remote_path: str) -> None:
+        """Tidy up: the render lives in the user's own storage, not ours."""
+        try:
+            requests.post(
+                f"{self.base_url}/delete",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json={"paths": [remote_path]}, timeout=60,
+            )
+        except Exception:
+            logger.debug("could not remove %s from Puter storage", remote_path)
 
     @staticmethod
     def _job_handle(parsed: Any) -> Optional[str]:
