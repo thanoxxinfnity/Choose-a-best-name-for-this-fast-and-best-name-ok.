@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MovieCreation
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
                 EditorScreen(
                     onOpenSettings = { startActivity(SettingsActivity.intent(this)) },
                     onOpenStudio = { startActivity(GenerateActivity.intent(this)) },
+                    onOpenGallery = { startActivity(GalleryActivity.intent(this)) },
                     onShare = { uri -> shareVideo(uri) },
                 )
             }
@@ -123,6 +125,7 @@ class MainActivity : ComponentActivity() {
 fun EditorScreen(
     onOpenSettings: () -> Unit,
     onOpenStudio: () -> Unit,
+    onOpenGallery: () -> Unit,
     onShare: (Uri) -> Unit,
     viewModel: EditorViewModel = viewModel(),
 ) {
@@ -174,6 +177,9 @@ fun EditorScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenGallery) {
+                        Icon(Icons.Filled.PhotoLibrary, contentDescription = "Gallery")
+                    }
                     IconButton(onClick = onOpenStudio) {
                         Icon(Icons.Filled.AutoAwesome, contentDescription = "AI Studio")
                     }

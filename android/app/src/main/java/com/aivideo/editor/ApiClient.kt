@@ -69,6 +69,39 @@ data class ThemeDto(
 )
 
 @Serializable
+data class GalleryItemDto(
+    @SerialName("item_id") val itemId: String,
+    val kind: String = "render",
+    val filename: String = "",
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    @SerialName("created_iso") val createdIso: String = "",
+    val duration: Double = 0.0,
+    val width: Int = 0,
+    val height: Int = 0,
+    val fps: Double = 0.0,
+    val title: String = "",
+    val theme: String = "",
+    val provider: String = "",
+    @SerialName("export_preset") val exportPreset: String = "",
+    @SerialName("stream_url") val streamUrl: String = "",
+    @SerialName("thumbnail_url") val thumbnailUrl: String = "",
+)
+
+@Serializable
+data class GalleryStatsDto(
+    val count: Int = 0,
+    val renders: Int = 0,
+    val generated: Int = 0,
+    @SerialName("total_bytes") val totalBytes: Long = 0,
+)
+
+@Serializable
+data class GalleryDto(
+    val items: List<GalleryItemDto> = emptyList(),
+    val stats: GalleryStatsDto = GalleryStatsDto(),
+)
+
+@Serializable
 data class VideoProviderDto(
     val key: String,
     val label: String,
@@ -298,6 +331,54 @@ object ApiClient {
             json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(ThemeDto.serializer()), body)
         }
     }
+
+    // --------------------------------------------------------------- gallery
+    fun listGallery(context: Context, limit: Int = 100): Result<GalleryDto> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/gallery?limit=$limit")
+            .headers(authHeaders(context)).get().build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(GalleryDto.serializer(), body)
+        }
+    }
+
+    fun deleteGalleryItem(context: Context, itemId: String): Result<Unit> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/gallery/$itemId")
+            .headers(authHeaders(context)).delete().build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException(errorMessage(response, response.body?.string().orEmpty()))
+            }
+        }
+    }
+
+    /** Download a gallery entry straight into Movies/Moja AI. */
+    fun saveGalleryItem(
+        context: Context,
+        item: GalleryItemDto,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): Result<Uri> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/gallery/${item.itemId}/download")
+            .headers(authHeaders(context)).get().build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException(errorMessage(response, response.body?.string().orEmpty()))
+            }
+            val body = response.body ?: throw IOException("Empty response body")
+            writeToGallery(context, item.filename.ifBlank { "${item.itemId}.mp4" },
+                           body.contentLength()) { output ->
+                copyWithProgress(body.byteStream(), output, body.contentLength(), onProgress)
+            }
+        }
+    }
+
+    /** Absolute URL for a gallery path the DTO returned as relative. */
+    fun absolute(context: Context, path: String): String =
+        if (path.startsWith("http")) path else "${baseUrl(context)}$path"
 
     /** Generation backends and which of them are usable right now. */
     fun listVideoProviders(context: Context): Result<List<VideoProviderDto>> = runCatching {

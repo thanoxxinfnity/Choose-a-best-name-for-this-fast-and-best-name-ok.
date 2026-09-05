@@ -73,6 +73,7 @@ from schemas import (
 )
 from export_presets import PRESETS, describe_cost, resolve_preset
 from editing_skill import load_skill, reset_skill
+import gallery as gallery_store
 from style_library import all_exemplars, validate_library
 from themes import THEMES, resolve_theme
 from trend_research import derive_style, research_trends
@@ -368,7 +369,13 @@ def _iter_file(path: Path, start: int, end: int) -> Iterator[bytes]:
 @app.get("/api/v1/jobs/{job_id}/stream")
 def stream_video(job_id: str, request: Request):
     """Range enabled progressive streaming so ExoPlayer can seek/scrub."""
-    path = _completed_output(job_id)
+    return _ranged_file_response(_completed_output(job_id), request)
+
+
+def _ranged_file_response(path: Path, request: Request):
+    """Serve a file honouring the Range header, so players can seek."""
+    if not path.exists():
+        raise HTTPException(status_code=410, detail="The file is no longer on disk.")
     file_size = path.stat().st_size
     media_type = mimetypes.guess_type(str(path))[0] or "video/mp4"
     range_header = request.headers.get("range") or request.headers.get("Range")
@@ -573,6 +580,58 @@ def get_trends(
     payload["derived_style"] = derive_style(report)
     payload["prompt_block"] = report.to_prompt_block()
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Gallery
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/v1/gallery")
+def get_gallery(kind: str = "", limit: int = 100):
+    """Everything Moja AI has produced - renders and generated clips."""
+    items = gallery_store.list_items(kind=kind, limit=limit)
+    return {"items": [item.to_dict() for item in items], "stats": gallery_store.stats()}
+
+
+@app.get("/api/v1/gallery/{item_id}/thumbnail")
+def get_gallery_thumbnail(item_id: str):
+    item = gallery_store.find_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown gallery item '{item_id}'")
+    thumbnail = gallery_store.ensure_thumbnail(item)
+    if thumbnail is None:
+        raise HTTPException(status_code=404, detail="No poster frame could be made.")
+    return FileResponse(thumbnail, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/api/v1/gallery/{item_id}/stream")
+def stream_gallery_item(item_id: str, request: Request):
+    """Range enabled playback, so ExoPlayer can scrub gallery entries."""
+    item = gallery_store.find_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown gallery item '{item_id}'")
+    return _ranged_file_response(Path(item.path), request)
+
+
+@app.get("/api/v1/gallery/{item_id}/download")
+def download_gallery_item(item_id: str):
+    item = gallery_store.find_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown gallery item '{item_id}'")
+    path = Path(item.path)
+    if not path.exists():
+        raise HTTPException(status_code=410, detail="The file is no longer on disk.")
+    return FileResponse(path, media_type="video/mp4", filename=item.filename,
+                        headers={"Accept-Ranges": "bytes"})
+
+
+@app.delete("/api/v1/gallery/{item_id}")
+def delete_gallery_item(item_id: str):
+    if not gallery_store.delete_item(item_id):
+        raise HTTPException(status_code=404, detail=f"Unknown gallery item '{item_id}'")
+    return {"item_id": item_id, "deleted": True}
 
 
 @app.get("/api/v1/skill")
