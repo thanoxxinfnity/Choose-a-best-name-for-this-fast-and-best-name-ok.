@@ -24,6 +24,8 @@ from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from export_presets import check_source_headroom, describe_cost, resolve_preset
 from micro_features import apply_micro_features
+from style_library import remember_plan
+from trend_research import derive_style, research_trends
 from themes import choose_theme, resolve_theme
 from video_analyzer import VideoAnalysis, analyse_video
 from puter_integration import PuterClient
@@ -73,6 +75,10 @@ class JobRequest:
     auto_beat_sync: bool = False
     auto_reframe: bool = False
     export_preset: str = "1080p60"
+    # Research the niche on YouTube before planning, and learn by example.
+    research_trends: bool = False
+    trend_query: str = ""
+    use_exemplars: bool = True
     enable_intro: bool = False
     enable_outro: bool = False
     max_stickers: int = 4
@@ -278,6 +284,28 @@ class JobManager:
                         f"- theme '{theme.name}'",
             )
 
+            # ------------------------------------------- 1b. trend research
+            trends = None
+            if request.research_trends:
+                query = request.trend_query.strip() or _default_trend_query(analyses, request.prompt)
+                if query:
+                    self._update(job_id, message=f"Researching '{query}' on YouTube")
+                    trends = research_trends(
+                        query, api_key=request.credentials.resolved_youtube_token(), limit=25,
+                    )
+                    if trends.error:
+                        self._append_warnings(job_id, [f"Trend research: {trends.error}"])
+                        trends = None
+                    else:
+                        style = derive_style(trends)
+                        self._append_warnings(job_id, [
+                            f"Researched {trends.sampled} top '{query}' shorts: winners run "
+                            f"~{trends.median_duration:.0f}s with about "
+                            f"{style.get('suggested_cuts', 0)} cuts."
+                        ])
+                        if request.target_duration is None and style.get("target_duration"):
+                            request.target_duration = float(style["target_duration"])
+
             reference = None
             if request.youtube_url:
                 reference = fetch_youtube_reference(
@@ -306,6 +334,8 @@ class JobManager:
                     analyses=analyses,
                     theme=theme.prompt_hint(),
                     max_animations=request.max_animations if request.enable_animation else 0,
+                    trends=trends,
+                    use_exemplars=request.use_exemplars,
                 )
             plan.captions.enabled = plan.captions.enabled and request.enable_captions
             plan.theme = theme.key
@@ -388,6 +418,17 @@ class JobManager:
                 duration_seconds=float(info.get("duration") or 0.0),
             )
             self._cleanup_intermediates(workspace)
+
+            # Keep the plan as an exemplar so later edits learn from what this
+            # user actually ships.
+            if analyses:
+                remember_plan(
+                    plan.model_dump(mode="json"),
+                    content_type=analyses[0].content_type,
+                    energy=analyses[0].energy,
+                    theme=theme.key,
+                    why=f"Rendered from: {request.prompt[:120]}",
+                )
             logger.info("Job %s completed in %.1fs", job_id, time.time() - started)
 
         except Exception as exc:
@@ -465,6 +506,20 @@ class JobManager:
         for directory in settings.jobs_dir.iterdir():
             if directory.is_dir():
                 self._load_one(directory.name)
+
+
+def _default_trend_query(analyses: List[VideoAnalysis], prompt: str) -> str:
+    """What to search for when the caller did not say."""
+    if analyses:
+        analysis = analyses[0]
+        parts = [analysis.recognisable or "", analysis.content_type.replace("_", " ")]
+        if analysis.subjects:
+            parts.append(analysis.subjects[0])
+        query = " ".join(part for part in parts if part).strip()
+        if query and query != "unknown":
+            return f"{query} edit shorts"
+    words = [word for word in (prompt or "").split() if len(word) > 3][:5]
+    return (" ".join(words) + " edit shorts").strip() if words else ""
 
 
 job_manager = JobManager()

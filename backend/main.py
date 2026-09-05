@@ -72,7 +72,9 @@ from schemas import (
     VoiceInfo,
 )
 from export_presets import PRESETS, describe_cost, resolve_preset
+from style_library import all_exemplars, validate_library
 from themes import THEMES, resolve_theme
+from trend_research import derive_style, research_trends
 from video_providers import (
     ProviderError,
     best_available,
@@ -214,6 +216,9 @@ async def create_render_job(
     auto_beat_sync: bool = Form(default=False),
     auto_reframe: bool = Form(default=False),
     export_preset: str = Form(default="1080p60"),
+    research_trends_flag: bool = Form(default=False, alias="research_trends"),
+    trend_query: str = Form(default=""),
+    use_exemplars: bool = Form(default=True),
     credentials: JobCredentials = Depends(get_credentials),
 ) -> JobCreatedResponse:
     if not videos:
@@ -279,6 +284,9 @@ async def create_render_job(
             auto_beat_sync=auto_beat_sync,
             auto_reframe=auto_reframe,
             export_preset=export_preset,
+            research_trends=research_trends_flag,
+            trend_query=trend_query,
+            use_exemplars=use_exemplars,
         )
     )
     export = resolve_preset(export_preset)
@@ -546,6 +554,41 @@ async def analyze_upload(
         return payload
     finally:
         path.unlink(missing_ok=True)
+
+
+@app.get("/api/v1/trends")
+def get_trends(
+    query: str,
+    limit: int = 25,
+    credentials: JobCredentials = Depends(get_credentials),
+):
+    """What is winning on YouTube for a niche, and the editing style it implies."""
+    report = research_trends(
+        query, api_key=credentials.resolved_youtube_token(), limit=max(5, min(limit, 50)),
+    )
+    if report.error:
+        raise HTTPException(status_code=502, detail=report.error)
+    payload = report.to_dict()
+    payload["derived_style"] = derive_style(report)
+    payload["prompt_block"] = report.to_prompt_block()
+    return payload
+
+
+@app.get("/api/v1/styles")
+def list_styles():
+    """The exemplar edits the planner learns from, curated plus learned."""
+    problems = validate_library()
+    return {
+        "exemplars": [
+            {
+                "key": item.key, "content_type": item.content_type, "energy": item.energy,
+                "theme": item.theme, "why": item.why, "source": item.source,
+                "score": item.score, "segments": len(item.plan.get("edit_timeline", [])),
+            }
+            for item in all_exemplars()
+        ],
+        "invalid": problems,
+    }
 
 
 @app.get("/api/v1/video/providers", response_model=List[VideoProviderInfo])

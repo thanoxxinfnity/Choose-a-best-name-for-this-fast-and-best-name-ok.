@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 from config import settings
+from style_library import build_prompt_section
 from schemas import (
     AudioSpec,
     CaptionSpec,
@@ -307,6 +308,8 @@ class KimiOrchestrator:
         analyses: Optional[Sequence[Any]] = None,
         theme: Optional[str] = None,
         max_animations: int = 0,
+        trends: Optional[Any] = None,
+        use_exemplars: bool = True,
     ) -> tuple[EditPlan, List[str]]:
         """Return ``(plan, warnings)``; never raises for recoverable failures."""
         warnings: List[str] = []
@@ -323,6 +326,7 @@ class KimiOrchestrator:
         user_message = self._compose_user_message(
             prompt, clips, youtube_reference, target, max_stickers, max_inpaints,
             analyses=analyses, theme=theme, max_animations=max_animations,
+            trends=trends, use_exemplars=use_exemplars,
         )
 
         raw: Optional[str] = None
@@ -483,6 +487,8 @@ class KimiOrchestrator:
         analyses: Optional[Sequence[Any]] = None,
         theme: Optional[str] = None,
         max_animations: int = 0,
+        trends: Optional[Any] = None,
+        use_exemplars: bool = True,
     ) -> str:
         clip_lines = [
             f"  [{index}] {clip.filename} - {clip.duration:.2f}s, "
@@ -518,9 +524,29 @@ class KimiOrchestrator:
             ]
         if theme:
             blocks += ["", f"[THEME PRESET] {theme} - match its look and pacing."]
+        if trends is not None and not getattr(trends, "error", ""):
+            blocks += [
+                "",
+                "[WHAT IS WINNING ON YOUTUBE RIGHT NOW - measured, not guessed]",
+                trends.to_prompt_block(),
+                "",
+                "Use this for pacing and length, and for the words on screen. "
+                "Do not copy any title verbatim.",
+            ]
         if reference is not None:
             blocks += ["", "[YOUTUBE REFERENCE - the style the user wants to match]",
                        reference.to_prompt_block()]
+        if use_exemplars:
+            first = analyses[0] if analyses else None
+            section = build_prompt_section(
+                content_type=str(getattr(first, "content_type", "") or ""),
+                energy=str(getattr(first, "energy", "") or ""),
+                theme=(theme or "").split(":")[0].strip().lower().replace(" ", "_"),
+                limit=2,
+            )
+            if section:
+                blocks += ["", section]
+
         blocks += [
             "",
             PLAN_CONSTRAINTS.format(
