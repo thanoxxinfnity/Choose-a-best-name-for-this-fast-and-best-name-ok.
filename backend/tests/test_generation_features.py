@@ -124,12 +124,19 @@ def _plan(**overrides) -> EditPlan:
     return plan
 
 
+# These tests are about what gets generated and spliced, not about pixels, so
+# they render at the smallest real preset. At 1080p the same ten renders take
+# four times as long for nothing either of them is checking.
+TEST_PRESET = "720p60"
+TEST_SIZE = (720, 1280)
+
+
 def _render(plan, source, tmp_path, name, monkeypatch, video_client=None):
     client = video_client or FakeVideoClient()
     monkeypatch.setattr(video_renderer, "PuterVideoClient", lambda api_key="": client)
     renderer = VideoRenderer(
         plan=plan, clip_paths=[source], workspace=tmp_path / f"ws_{name}",
-        puter=FakePuter(), theme="anime_edits",
+        puter=FakePuter(), theme="anime_edits", export=TEST_PRESET,
     )
     out = renderer.render(tmp_path / f"{name}.mp4")
     return renderer, client, out
@@ -153,7 +160,9 @@ def test_intro_and_outro_are_generated_and_spliced(source, tmp_path, monkeypatch
     info = probe_clip(out)
     # 4s of cut + 2s intro + 1.5s outro, minus encoder rounding.
     assert info["duration"] > 6.5, info
-    assert (info["width"], info["height"]) == (540, 960)
+    # The export preset decides the output, not the resolution the planner
+    # wrote - that is what makes a 4K request survive a 1080p plan.
+    assert (info["width"], info["height"]) == TEST_SIZE
     assert not any("intro" in w and "skipped" in w for w in renderer.warnings), renderer.warnings
 
 
