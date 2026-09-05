@@ -184,7 +184,9 @@ def test_sound_effects_land_on_the_cuts_and_reach_the_mix(tmp_path, source_clips
 
     renderer = VideoRenderer(
         plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws3",
-        puter=None, theme="anime_edits", enable_sfx=True,
+        # This checks the audio track; rendering it at 1080p pays four times
+        # the encode for pixels the test never looks at.
+        puter=None, theme="anime_edits", enable_sfx=True, export="720p60",
     )
     output = renderer.render(tmp_path / "sfx.mp4")
     assert output.exists()
@@ -213,7 +215,7 @@ def test_sfx_can_be_switched_off(tmp_path, source_clips):
     plan.captions.enabled = False
     renderer = VideoRenderer(
         plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws4",
-        puter=None, enable_sfx=False,
+        puter=None, enable_sfx=False, export="720p60",
     )
     renderer.render(tmp_path / "nosfx.mp4")
     assert not (tmp_path / "ws4" / "assets" / "sfx_track.wav").exists()
