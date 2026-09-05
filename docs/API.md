@@ -125,6 +125,10 @@ without downloading the whole file.
 | `max_animations` | `1` | how many moments may be animated (0-4) |
 | `enable_intro` | `false` | generate an AI intro |
 | `enable_outro` | `false` | generate an AI outro |
+| `enable_voiceover` | unset | unset lets Kimi decide; `true`/`false` is the user's switch and wins |
+| `auto_silence_cut` | `false` | drop detected dead air from the timeline |
+| `auto_beat_sync` | `false` | snap cuts onto the nearest musical onset |
+| `auto_reframe` | `false` | track the subject so the 9:16 crop follows it |
 
 ## AI video generation (Puter.js wan2.2)
 

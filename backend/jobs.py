@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
+from micro_features import apply_micro_features
 from themes import choose_theme, resolve_theme
 from video_analyzer import VideoAnalysis, analyse_video
 from puter_integration import PuterClient
@@ -66,6 +67,10 @@ class JobRequest:
     enable_voiceover: Optional[bool] = None
     enable_animation: bool = False
     max_animations: int = 1
+    # --- micro-features -----------------------------------------------------
+    auto_silence_cut: bool = False
+    auto_beat_sync: bool = False
+    auto_reframe: bool = False
     enable_intro: bool = False
     enable_outro: bool = False
     max_stickers: int = 4
@@ -311,6 +316,15 @@ class JobManager:
             if not request.enable_outro:
                 plan.outro.active = False
 
+            # ------------------------------------------ 2b. micro-features
+            if request.auto_silence_cut or request.auto_beat_sync:
+                plan, micro_notes = apply_micro_features(
+                    plan, analyses,
+                    silence_cut=request.auto_silence_cut,
+                    beat_sync=request.auto_beat_sync,
+                )
+                warnings.extend(micro_notes)
+
             self._append_warnings(job_id, warnings)
             self._update(job_id, plan=plan, message=f"Timeline ready: {len(plan.edit_timeline)} segments")
             (workspace / "plan.json").write_text(
@@ -333,6 +347,7 @@ class JobManager:
                 progress=on_progress,
                 theme=theme.key,
                 analyses=analyses,
+                auto_reframe=request.auto_reframe,
             )
             output = self.output_path(job_id)
             renderer.render(output)

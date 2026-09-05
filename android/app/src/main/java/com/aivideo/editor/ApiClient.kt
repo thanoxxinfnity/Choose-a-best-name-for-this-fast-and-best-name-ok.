@@ -189,6 +189,9 @@ object ApiClient {
         maxAnimations: Int = 1,
         enableIntro: Boolean = false,
         enableOutro: Boolean = false,
+        autoSilenceCut: Boolean = false,
+        autoBeatSync: Boolean = false,
+        autoReframe: Boolean = false,
         onProgress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result<JobCreatedDto> = runCatching {
         require(clips.isNotEmpty()) { "Select at least one video clip." }
@@ -211,6 +214,9 @@ object ApiClient {
             addFormDataPart("max_animations", maxAnimations.toString())
             addFormDataPart("enable_intro", enableIntro.toString())
             addFormDataPart("enable_outro", enableOutro.toString())
+            addFormDataPart("auto_silence_cut", autoSilenceCut.toString())
+            addFormDataPart("auto_beat_sync", autoBeatSync.toString())
+            addFormDataPart("auto_reframe", autoReframe.toString())
 
             clips.forEach { clip ->
                 val body = UriRequestBody(

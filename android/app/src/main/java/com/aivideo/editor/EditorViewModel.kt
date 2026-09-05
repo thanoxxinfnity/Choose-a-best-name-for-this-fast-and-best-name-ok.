@@ -30,6 +30,9 @@ data class EditorUiState(
     val maxAnimations: Int = 1,
     val enableIntro: Boolean = false,
     val enableOutro: Boolean = false,
+    val autoSilenceCut: Boolean = false,
+    val autoBeatSync: Boolean = false,
+    val autoReframe: Boolean = false,
     val themes: List<ThemeDto> = emptyList(),
     val voices: List<VoiceDto> = emptyList(),
 
@@ -136,6 +139,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setEnableOutro(value: Boolean) = _state.update { it.copy(enableOutro = value) }
 
+    fun setAutoSilenceCut(value: Boolean) = _state.update { it.copy(autoSilenceCut = value) }
+
+    fun setAutoBeatSync(value: Boolean) = _state.update { it.copy(autoBeatSync = value) }
+
+    fun setAutoReframe(value: Boolean) = _state.update { it.copy(autoReframe = value) }
+
     fun setMaxStickers(value: Int) = _state.update { it.copy(maxStickers = value) }
 
     fun setMaxInpaints(value: Int) = _state.update { it.copy(maxInpaints = value) }
@@ -198,6 +207,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     maxAnimations = current.maxAnimations,
                     enableIntro = current.enableIntro,
                     enableOutro = current.enableOutro,
+                    autoSilenceCut = current.autoSilenceCut,
+                    autoBeatSync = current.autoBeatSync,
+                    autoReframe = current.autoReframe,
                 ) { uploaded, total ->
                     _state.update { it.copy(uploadedBytes = uploaded, totalBytes = total) }
                 }

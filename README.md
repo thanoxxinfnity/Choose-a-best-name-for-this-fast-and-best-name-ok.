@@ -175,6 +175,23 @@ backend URL you configured; the backend never writes them to disk.
 The JSON contract Kimi K3 must emit is documented in `docs/PIPELINE.md` and
 enforced by `schemas.EditPlan`.
 
+### Auto edit micro-features
+
+All three run locally on the analysis pass - no API key, no model download.
+
+| Feature | What it does | How |
+|---|---|---|
+| **Auto silence-cut** | drops dead air out of the timeline | the audio envelope's silence spans are subtracted from each segment, splitting it around a hole or dropping it entirely; `keep_padding` leaves a breath so cuts never land on the first syllable |
+| **Auto beat-sync** | snaps every cut onto the music | each boundary moves to the nearest onset **within a tolerance**, so a deliberate cut that sits nowhere near a beat is left alone, and a snap that would collapse a segment is refused |
+| **Auto-reframe** | the 9:16 crop follows the subject | faces first (Haar cascade), then the centroid of frame-to-frame motion, then edge density; the trajectory is smoothed forward-and-backward so there is no lag, and clamped inside the frame |
+
+Silence-cut runs before beat-sync: the first decides which ranges exist, the
+second tightens whatever survived. Already-vertical footage is skipped by
+auto-reframe - there is nothing to pan across.
+
+Enable them per render with `auto_silence_cut`, `auto_beat_sync` and
+`auto_reframe`, or from the **Auto edit** switches in the app.
+
 ### Voice profiles
 
 | Key | Voice | Character |

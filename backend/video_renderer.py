@@ -41,6 +41,7 @@ from puter_video import (
     conform_generated_clip,
     extract_keyframe,
 )
+from micro_features import ReframeTrack, plan_reframe
 from sticker_art import draw_sticker
 from themes import Theme, resolve_theme
 from vfx import apply_frame_effect, build_effect_chain
@@ -415,8 +416,20 @@ def anchor_for(position: str) -> Tuple[float, float]:
     return _POSITION_ANCHORS.get(key, _POSITION_ANCHORS["bottom_center"])
 
 
-def fit_vertical(clip, width: int, height: int):
-    """Scale-to-cover + centre crop so any clip fills the 1080x1920 canvas."""
+def fit_vertical(
+    clip,
+    width: int,
+    height: int,
+    track: Optional[ReframeTrack] = None,
+    track_offset: float = 0.0,
+):
+    """Scale-to-cover the canvas, then crop.
+
+    Without a ``track`` the crop is centred, which is what most footage wants.
+    With one - produced by :func:`micro_features.plan_reframe` - the window
+    follows the tracked subject, so a 16:9 clip reframed to 9:16 keeps the
+    action instead of whatever happened to be in the middle.
+    """
     source_width, source_height = clip.size
     if source_width <= 0 or source_height <= 0:
         raise RenderError("Clip has an invalid size.")
@@ -427,17 +440,33 @@ def fit_vertical(clip, width: int, height: int):
     new_height += new_height % 2
     resized = _resize(clip, (new_width, new_height))
 
-    x_center = new_width / 2
-    y_center = new_height / 2
-    if hasattr(resized, "crop"):
-        cropped = resized.crop(
-            x_center=x_center, y_center=y_center, width=width, height=height
-        )
-    else:  # MoviePy 2.x
-        cropped = resized.cropped(
-            x_center=x_center, y_center=y_center, width=width, height=height
-        )
-    return cropped
+    if track is None:
+        return _static_crop(resized, new_width / 2, new_height / 2, width, height)
+
+    # The track is in source pixels; the clip has been scaled to cover.
+    half_w, half_h = width / 2.0, height / 2.0
+    max_x, max_y = new_width - half_w, new_height - half_h
+
+    def crop_at(get_frame, t):
+        frame = get_frame(t)
+        centre_x, centre_y = track.centre_at(t + track_offset)
+        x = min(max(centre_x * scale, half_w), max(max_x, half_w))
+        y = min(max(centre_y * scale, half_h), max(max_y, half_h))
+        left = int(round(x - half_w))
+        top = int(round(y - half_h))
+        left = max(0, min(left, frame.shape[1] - width))
+        top = max(0, min(top, frame.shape[0] - height))
+        return frame[top:top + height, left:left + width]
+
+    if hasattr(resized, "fl"):
+        return resized.fl(crop_at, apply_to=[])
+    return resized.transform(crop_at, apply_to=[])
+
+
+def _static_crop(clip, x_center: float, y_center: float, width: int, height: int):
+    if hasattr(clip, "crop"):
+        return clip.crop(x_center=x_center, y_center=y_center, width=width, height=height)
+    return clip.cropped(x_center=x_center, y_center=y_center, width=width, height=height)
 
 
 # ---------------------------------------------------------------------------
@@ -457,9 +486,12 @@ class VideoRenderer:
         progress: Optional[ProgressCallback] = None,
         theme: Optional[str] = None,
         analyses: Optional[Sequence[Any]] = None,
+        auto_reframe: bool = False,
     ) -> None:
         self.theme: Theme = resolve_theme(theme)
         self.analyses = list(analyses or [])
+        self.auto_reframe = auto_reframe
+        self._reframe_tracks: Dict[int, Optional[ReframeTrack]] = {}
         self.plan = plan
         self.clip_paths = [Path(path) for path in clip_paths]
         self.workspace = Path(workspace)
@@ -817,7 +849,14 @@ class VideoRenderer:
             return None
 
         piece = _sub(clip, working_start, working_end)
-        piece = fit_vertical(piece, self.width, self.height)
+        track = None
+        if self.auto_reframe and working_source == source:
+            # Only track the original footage: a generated or inpainted clip is
+            # already produced at the target aspect.
+            track = self._reframe_track(source_index, source)
+        piece = fit_vertical(
+            piece, self.width, self.height, track=track, track_offset=working_start,
+        )
 
         speed = segment.speed if segment.speed and segment.speed > 0 else 1.0
         cut_type = (segment.cut_type or "").lower()
@@ -833,6 +872,29 @@ class VideoRenderer:
 
         piece = _with_fps(piece, self.fps)
         return self._track(piece)
+
+    def _reframe_track(self, source_index: int, source: Path) -> Optional[ReframeTrack]:
+        """One subject track per clip, computed on first use and reused."""
+        if source_index in self._reframe_tracks:
+            return self._reframe_tracks[source_index]
+        self.report(JobStage.ANALYZING, 0.21, f"Auto-reframe: tracking {source.name}")
+        try:
+            track = plan_reframe(source, self.width / self.height)
+        except Exception as exc:
+            self.warn(f"Auto-reframe failed for {source.name}: {exc}")
+            track = None
+        if track is None:
+            self.warn(
+                f"Auto-reframe found nothing to follow in {source.name} - "
+                "kept the centre crop."
+            )
+        elif not track.confident:
+            self.warn(
+                f"Auto-reframe had a weak subject lock on {source.name}; the pan "
+                "may be conservative."
+            )
+        self._reframe_tracks[source_index] = track
+        return track
 
     def _apply_zoom_punch(self, clip):
         duration = clip.duration or 1.0

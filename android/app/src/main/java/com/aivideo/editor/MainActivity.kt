@@ -44,6 +44,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -358,6 +359,28 @@ fun EditorScreen(
                         steps = 2,
                     )
                 }
+
+                HorizontalDivider()
+                Text("Auto edit", style = MaterialTheme.typography.titleSmall)
+                ToggleRow(
+                    title = "Auto silence-cut",
+                    subtitle = "Drops dead air detected in the audio",
+                    checked = state.autoSilenceCut,
+                    onCheckedChange = viewModel::setAutoSilenceCut,
+                )
+                ToggleRow(
+                    title = "Auto beat-sync",
+                    subtitle = "Snaps every cut onto the nearest musical onset",
+                    checked = state.autoBeatSync,
+                    onCheckedChange = viewModel::setAutoBeatSync,
+                )
+                ToggleRow(
+                    title = "Auto-reframe",
+                    subtitle = "Tracks the subject so the 9:16 crop follows it",
+                    checked = state.autoReframe,
+                    onCheckedChange = viewModel::setAutoReframe,
+                )
+                HorizontalDivider()
 
                 Text(
                     "Target length: ${state.targetDurationSeconds.toInt()}s",

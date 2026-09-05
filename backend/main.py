@@ -199,6 +199,9 @@ async def create_render_job(
     max_animations: int = Form(default=1),
     enable_intro: bool = Form(default=False),
     enable_outro: bool = Form(default=False),
+    auto_silence_cut: bool = Form(default=False),
+    auto_beat_sync: bool = Form(default=False),
+    auto_reframe: bool = Form(default=False),
     credentials: JobCredentials = Depends(get_credentials),
 ) -> JobCreatedResponse:
     if not videos:
@@ -260,6 +263,9 @@ async def create_render_job(
             max_animations=max(0, min(int(max_animations), 4)),
             enable_intro=enable_intro,
             enable_outro=enable_outro,
+            auto_silence_cut=auto_silence_cut,
+            auto_beat_sync=auto_beat_sync,
+            auto_reframe=auto_reframe,
         )
     )
     return JobCreatedResponse(
