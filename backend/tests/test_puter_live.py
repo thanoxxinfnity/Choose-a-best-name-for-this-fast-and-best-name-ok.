@@ -99,15 +99,50 @@ def test_the_inpaint_method_we_configured_is_one_the_driver_has():
     )
 
 
-def test_puter_still_has_no_video_generation():
-    """The blueprint assumed wan2.2 through Puter; Puter serves no video driver.
+def test_the_video_driver_we_configured_is_the_one_that_exists():
+    """The driver name was wrong for most of this project's life.
 
-    If this ever starts passing, Puter gained video generation and
-    PuterVideoProvider can be switched back on ahead of the local fallback.
+    Probing found "Driver not found: puter-video-generation:wan-ai" and that
+    was read as "there is no video interface" - but the error names the
+    *pair*, and the interface was there all along under a different driver.
+    A valid pair answers "Method not found" for a nonsense method; an invalid
+    one says "Driver not found". That is the distinction this asserts.
     """
     response = _call(
         settings.puter_video_interface, settings.puter_video_driver,
-        settings.puter_video_method, {"prompt": "test"},
+        "__no_such_method__", {},
     )
     assert response.status_code == 404
-    assert "Driver not found" in response.text
+    assert "Driver not found" not in response.text, (
+        f"{settings.puter_video_interface}:{settings.puter_video_driver} "
+        f"is not a real driver pair: {response.text[:200]}"
+    )
+    assert "Method" in response.text
+
+
+def test_video_generation_answers_in_test_mode():
+    """test_mode proves the endpoint is reachable without spending credits.
+
+    It proves only that. The same canned sample comes back for a model name
+    that does not exist, so it cannot be used to check which models or which
+    arguments actually work - only a paid call can.
+    """
+    response = _call(
+        settings.puter_video_interface, settings.puter_video_driver,
+        settings.puter_video_method,
+        {"prompt": "a slow drift through dark clouds",
+         "model": settings.puter_t2v_model, "seconds": 4, "test_mode": True},
+        timeout=240,
+    )
+    assert response.status_code == 200, response.text[:300]
+    assert response.json().get("success") is True
+
+
+def test_generation_still_needs_a_prompt():
+    """A guard that the driver validates anything at all in test mode."""
+    response = _call(
+        settings.puter_video_interface, settings.puter_video_driver,
+        settings.puter_video_method, {"test_mode": True},
+    )
+    assert response.status_code == 400
+    assert "prompt" in response.text

@@ -56,12 +56,14 @@ class Settings(BaseSettings):
 
     # --- video generation (wan 2.2 text-to-video / image-to-video) ---------
     puter_video_interface: str = "puter-video-generation"
-    puter_video_driver: str = "wan-ai"
+    # Verified against the live driver list: the pair that exists is
+    # puter-video-generation:openai-video-generation, method "generate".
+    puter_video_driver: str = "openai-video-generation"
     puter_video_method: str = "generate"
     puter_video_status_method: str = "status"
     puter_video_timeout: int = 900
-    puter_t2v_model: str = "wan-ai/wan2.2-t2v-a14b"
-    puter_i2v_model: str = "wan-ai/wan2.2-i2v-a14b"
+    puter_t2v_model: str = "sora-2"
+    puter_i2v_model: str = "sora-2"
 
     puter_inpaint_interface: str = "puter-image-generation"
     puter_inpaint_driver: str = "openai-image-generation"
