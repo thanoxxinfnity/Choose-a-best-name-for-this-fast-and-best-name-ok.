@@ -33,6 +33,7 @@ data class EditorUiState(
     val autoSilenceCut: Boolean = false,
     val autoBeatSync: Boolean = false,
     val autoReframe: Boolean = false,
+    val enableSfx: Boolean = true,
     val exportPreset: String = "1080p60",
     val exportPresets: List<ExportPresetDto> = emptyList(),
     val themes: List<ThemeDto> = emptyList(),
@@ -147,6 +148,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun setAutoBeatSync(value: Boolean) = _state.update { it.copy(autoBeatSync = value) }
 
     fun setAutoReframe(value: Boolean) = _state.update { it.copy(autoReframe = value) }
+    fun setEnableSfx(value: Boolean) = _state.update { it.copy(enableSfx = value) }
 
     fun setExportPreset(value: String) {
         SecureStore.write(context, SecureStore.KEY_EXPORT_PRESET, value)
@@ -220,6 +222,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     autoSilenceCut = current.autoSilenceCut,
                     autoBeatSync = current.autoBeatSync,
                     autoReframe = current.autoReframe,
+                    enableSfx = current.enableSfx,
                     exportPreset = current.exportPreset,
                 ) { uploaded, total ->
                     _state.update { it.copy(uploadedBytes = uploaded, totalBytes = total) }

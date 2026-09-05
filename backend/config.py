@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # Original audio level once the Indian accent TTS voiceover is laid on top.
     background_audio_gain: float = 0.18
     tts_audio_gain: float = 1.0
+    # SFX sit under the narration, not beside it: loud enough to punch the
+    # cut, quiet enough that a word is never lost behind a whoosh.
+    sfx_audio_gain: float = 0.45
+    enable_sfx: bool = True
 
     # ------------------------------------------------------------- captions --
     whisper_model: str = "small"

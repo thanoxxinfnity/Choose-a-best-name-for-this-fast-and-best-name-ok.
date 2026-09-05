@@ -168,3 +168,52 @@ def test_render_degrades_without_puter(tmp_path, source_clips):
     assert (info["width"], info["height"]) == (1080, 1920)
     assert any("voiceover" in warning for warning in renderer.warnings)
     assert any("stickers" in warning for warning in renderer.warnings)
+
+
+def test_sound_effects_land_on_the_cuts_and_reach_the_mix(tmp_path, source_clips):
+    """SFX are placed off the *rendered* boundaries, not the planner's timecodes.
+
+    A segment's ``start_time`` describes where it was taken from in the source;
+    where it lands in the edit is whatever the segments before it added up to.
+    Getting that wrong puts every whoosh in the wrong place, so the boundaries
+    are recorded as the timeline is cut.
+    """
+    plan = _plan()
+    plan.audio.use_puter_tts = False
+    plan.captions.enabled = False
+
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws3",
+        puter=None, theme="anime_edits", enable_sfx=True,
+    )
+    output = renderer.render(tmp_path / "sfx.mp4")
+    assert output.exists()
+
+    # Segment 1 opens the edit so it gets nothing; segment 2 is a speed ramp
+    # (a transition) and segment 3 a zoom punch (a hit).
+    assert len(renderer._cut_times) == 1
+    assert len(renderer._impact_times) == 1
+    assert renderer._impact_times[0] > renderer._cut_times[0] > 0.05
+
+    track = tmp_path / "ws3" / "assets" / "sfx_track.wav"
+    assert track.exists(), "the SFX track was never written"
+    peak = subprocess.run(
+        [ffmpeg_binary(), "-hide_banner", "-nostats", "-i", str(track),
+         "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True,
+    ).stderr
+    assert "max_volume:" in peak
+    level = float(peak.split("max_volume:")[1].split("dB")[0].strip())
+    assert level > -20.0, f"the SFX track is effectively silent ({level}dB)"
+
+
+def test_sfx_can_be_switched_off(tmp_path, source_clips):
+    plan = _plan()
+    plan.audio.use_puter_tts = False
+    plan.captions.enabled = False
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws4",
+        puter=None, enable_sfx=False,
+    )
+    renderer.render(tmp_path / "nosfx.mp4")
+    assert not (tmp_path / "ws4" / "assets" / "sfx_track.wav").exists()

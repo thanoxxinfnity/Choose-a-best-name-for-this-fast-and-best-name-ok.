@@ -41,8 +41,10 @@ from puter_video import (
     conform_generated_clip,
     extract_keyframe,
 )
+from ae_style import select_accent_hits
 from export_presets import DEFAULT_PRESET, ExportPreset, resolve_preset
 from micro_features import ReframeTrack, plan_reframe
+from sfx import SfxPlacement, build_sfx_track, plan_placements
 from sticker_art import draw_sticker
 from themes import Theme, resolve_theme
 from vfx import apply_frame_effect, build_effect_chain
@@ -103,6 +105,13 @@ def _with_duration(clip, value: float):
 
 def _with_position(clip, value):
     return clip.set_position(value) if hasattr(clip, "set_position") else clip.with_position(value)
+
+
+def _duration_of(clip) -> float:
+    try:
+        return float(clip.duration or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _with_audio(clip, audio):
@@ -489,11 +498,13 @@ class VideoRenderer:
         analyses: Optional[Sequence[Any]] = None,
         auto_reframe: bool = False,
         export: Optional[str] = None,
+        enable_sfx: bool = True,
     ) -> None:
         self.export: ExportPreset = resolve_preset(export or DEFAULT_PRESET)
         self.theme: Theme = resolve_theme(theme)
         self.analyses = list(analyses or [])
         self.auto_reframe = auto_reframe
+        self.enable_sfx = enable_sfx
         self._reframe_tracks: Dict[int, Optional[ReframeTrack]] = {}
         self.plan = plan
         self.clip_paths = [Path(path) for path in clip_paths]
@@ -515,6 +526,10 @@ class VideoRenderer:
         self._open_clips: List[Any] = []
         self._video_client_cache: Optional[PuterVideoClient] = None
         self._intro_offset: float = 0.0
+        # Filled in as the timeline is cut: where one segment gives way to
+        # the next, and which of those hand-offs are hits rather than cuts.
+        self._cut_times: List[float] = []
+        self._impact_times: List[float] = []
 
         # The theme drives caption colours and sticker animation unless the
         # plan asked for something specific.
@@ -657,6 +672,11 @@ class VideoRenderer:
             clip = self._build_segment(index, segment)
             animation = self._build_animation(index, segment)
 
+            # The boundary is where this segment lands, which is whatever the
+            # segments before it added up to - the planner's own timecodes
+            # describe the source, not the cut.
+            self._note_boundary(segment, sum(_duration_of(c) for c in segment_clips))
+
             if animation is not None and segment.puter_animate.mode == "replace":
                 segment_clips.append(animation)
                 continue
@@ -676,6 +696,20 @@ class VideoRenderer:
         base_path = self.workspace / "base.mp4"
         self._write_video(base, base_path, with_audio=True)
         return base_path
+
+    def _note_boundary(self, segment: TimelineSegment, at: float) -> None:
+        """Record a segment hand-off so the SFX pass knows where to land.
+
+        A zoom punch or a hard cut is a hit and wants an impact under it;
+        everything else is a transition and wants a whoosh leading into it.
+        """
+        if at <= 0.05:
+            return
+        cut_type = (segment.cut_type or "").lower()
+        if cut_type in ("zoom_punch", "hard_cut"):
+            self._impact_times.append(at)
+        else:
+            self._cut_times.append(at)
 
     def _attach_intro_outro(self, base_video: Path) -> Path:
         """Generate the AI intro / outro and splice them onto the cut."""
@@ -1226,18 +1260,35 @@ class VideoRenderer:
         """Grade, bloom, vignette and shake, as one per-frame pass."""
         hits = self._theme_hits(duration)
         shake = self.theme.shake_spec(hits, width=self.width)
+        # The flash is rationed. A blown frame on every beat is a strobe, not a
+        # style - the eye stops registering any single one. Spending one every
+        # few hits is what makes the ones that land read as impacts.
+        flash_hits: List[float] = []
+        if self.theme.flash_strength > 0:
+            flash_hits = select_accent_hits(sorted(set(self._impact_times) | set(hits)))
         effect = build_effect_chain(
             shake=shake,
             grade=self.theme.grade or None,
             vignette_strength=self.theme.vignette,
             bloom=self.theme.bloom,
+            base_rgb_split=self.theme.base_rgb_split * (self.width / 1080.0),
+            flash_hits=flash_hits,
+            flash_strength=self.theme.flash_strength,
+            flash_decay=self.theme.flash_decay,
+            drift_zoom=self.theme.drift_zoom,
+            duration=duration,
         )
         if effect is None:
             return clip
+        detail = []
+        if shake:
+            detail.append(f"{self.theme.shake_kind} shake on {len(hits)} hits")
+        if flash_hits:
+            detail.append(f"{len(flash_hits)} impact flashes")
         self.report(
             JobStage.RENDERING, 0.78,
             f"Applying '{self.theme.name}' look"
-            + (f" ({self.theme.shake_kind} shake on {len(hits)} hits)" if shake else ""),
+            + (f" ({', '.join(detail)})" if detail else ""),
         )
         return apply_frame_effect(clip, effect)
 
@@ -1283,11 +1334,48 @@ class VideoRenderer:
             tracks.append(narration)
             audio_duration = max(audio_duration, placed_at + (narration.duration or 0.0))
 
+        sfx_track = self._build_sfx(audio_duration)
+        if sfx_track is not None:
+            tracks.append(sfx_track)
+
         if not tracks:
             return None, duration
         if len(tracks) == 1:
             return _with_duration(tracks[0], audio_duration), audio_duration
         return _with_duration(CompositeAudioClip(tracks), audio_duration), audio_duration
+
+    def _build_sfx(self, duration: float):
+        """Synthesise and mix the whooshes, impacts and risers for this cut."""
+        if not self.enable_sfx or duration <= 0:
+            return None
+        offset = self._intro_offset
+        placements = plan_placements(
+            cut_times=[t + offset for t in self._cut_times],
+            impact_times=[t + offset for t in self._impact_times],
+            theme=self.theme.key,
+            duration=duration,
+        )
+        if not placements:
+            return None
+        try:
+            track = build_sfx_track(
+                placements,
+                self.assets_dir / "sfx_track.wav",
+                duration=duration,
+                workspace=self.workspace / "sfx_cache",
+            )
+        except Exception as exc:  # a missing generator must not sink the render
+            self.warn(f"Sound effects were skipped: {exc}")
+            return None
+        if track is None:
+            self.warn("Sound effects could not be synthesised - the edit is silent of SFX.")
+            return None
+        self.report(
+            JobStage.RENDERING, 0.72,
+            f"Mixing {len(placements)} sound effect(s)",
+        )
+        clip = self._track(AudioFileClip(str(track)))
+        return _volume(clip, settings.sfx_audio_gain)
 
     def _export_audio_for_captions(
         self, audio_clip, voiceover: Sequence[Tuple[Path, float, float]]

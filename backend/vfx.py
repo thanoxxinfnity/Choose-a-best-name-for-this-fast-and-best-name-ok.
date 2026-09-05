@@ -179,6 +179,41 @@ def composite_over(foreground_rgba: np.ndarray, background: Frame) -> Frame:
 _VIGNETTE_CACHE: dict = {}
 
 
+def impact_flash(frame: Frame, amount: float) -> Frame:
+    """Lift the whole frame toward white for a hit.
+
+    The AE-school impact frame is not a white card spliced in - that reads as a
+    dropped frame. It is the picture itself blown out for two or three frames
+    and settling, so the shot underneath stays legible the whole time.
+    """
+    if amount <= 0.001:
+        return frame
+    amount = float(min(max(amount, 0.0), 0.9))
+    return cv2.addWeighted(frame, 1.0 - amount, np.full_like(frame, 255), amount, 0.0)
+
+
+def punch_zoom(frame: Frame, scale: float) -> Frame:
+    """Scale about the centre and crop back, for a continuous camera push."""
+    if abs(scale - 1.0) < 1e-4:
+        return frame
+    return shift_frame(frame, 0.0, 0.0, scale)
+
+
+def flash_envelope(hits: Sequence[float], t: float, decay: float = 0.13) -> float:
+    """How hard a flash is burning at ``t``, 0..1.
+
+    A flash is asymmetric on purpose: it arrives on the frame of the hit and
+    falls away, never ramps up. A symmetric envelope pre-lights the cut and
+    gives the hit away a beat early.
+    """
+    best = 0.0
+    for hit in hits or ():
+        delta = t - hit
+        if 0.0 <= delta <= decay:
+            best = max(best, (1.0 - delta / decay) ** 2)
+    return best
+
+
 def vignette(frame: Frame, strength: float = 0.35) -> Frame:
     if strength <= 0.01:
         return frame
@@ -288,14 +323,29 @@ def build_effect_chain(
     vignette_strength: float = 0.0,
     bloom: float = 0.0,
     pop: float = 0.0,
+    base_rgb_split: float = 0.0,
+    flash_hits: Sequence[float] = (),
+    flash_strength: float = 0.0,
+    flash_decay: float = 0.13,
+    drift_zoom: float = 0.0,
+    duration: float = 0.0,
 ) -> Optional[Callable[[Frame, float], Frame]]:
     """Compose the per-frame effects a theme asks for into one callable."""
-    if shake is None and not grade and vignette_strength <= 0 and bloom <= 0 and pop <= 0:
+    wants_flash = flash_strength > 0 and bool(flash_hits)
+    wants_drift = drift_zoom > 0 and duration > 0
+    if (shake is None and not grade and vignette_strength <= 0 and bloom <= 0
+            and pop <= 0 and base_rgb_split <= 0 and not wants_flash and not wants_drift):
         return None
     seed = 0.0
+    hits = tuple(flash_hits or ())
 
     def effect(frame: Frame, t: float) -> Frame:
         out = frame
+        # A slow push across the whole shot, before any shake displaces it -
+        # the AE camera move that keeps a static shot from feeling frozen.
+        if wants_drift:
+            progress = min(max(t / duration, 0.0), 1.0)
+            out = punch_zoom(out, 1.0 + drift_zoom * progress)
         if shake is not None and shake.kind != "none":
             dx, dy, zoom, split = shake_at(shake, t, seed)
             if shake.motion_blur:
@@ -304,6 +354,11 @@ def build_effect_chain(
                 out = shift_frame(out, dx, dy, zoom)
             if split > 0.4:
                 out = rgb_split(out, split, angle=math.atan2(dy, dx) if (dx or dy) else 0.0)
+        # Chromatic aberration that never fully goes away: the constant, low
+        # level one is what makes the footage read as graded rather than raw,
+        # and it is separate from the hard split a hit throws.
+        if base_rgb_split > 0.4:
+            out = rgb_split(out, base_rgb_split)
         if grade:
             out = colour_grade(out, **grade)
         if pop > 0:
@@ -312,6 +367,11 @@ def build_effect_chain(
             out = glow_bloom(out, bloom)
         if vignette_strength > 0:
             out = vignette(out, vignette_strength)
+        # The flash goes last so it burns the graded picture, not the raw one.
+        if wants_flash:
+            burn = flash_envelope(hits, t, flash_decay) * flash_strength
+            if burn > 0.001:
+                out = impact_flash(out, burn)
         return out
 
     return effect

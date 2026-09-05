@@ -306,3 +306,104 @@ def test_video_client_without_a_key_refuses_clearly(tmp_path):
     client = PuterVideoClient(api_key="")
     with pytest.raises(PuterError, match="Puter.js API key"):
         client.text_to_video("a cat", tmp_path / "out.mp4")
+
+
+# ------------------------------------------------- the AE hype look ---------
+
+def test_the_impact_flash_lifts_the_frame_without_erasing_it():
+    """A flash is the picture blown out, not a white card spliced in."""
+    from vfx import impact_flash
+
+    frame = np.full((32, 32, 3), 60, dtype=np.uint8)
+    frame[:, :16] = 200  # a light half and a dark half
+    flashed = impact_flash(frame, 0.34)
+
+    assert flashed.mean() > frame.mean() + 20
+    # The shot is still readable: the two halves stay distinguishable.
+    assert int(flashed[:, :16].mean()) - int(flashed[:, 16:].mean()) > 40
+    assert flashed.max() <= 255
+
+
+def test_no_flash_at_zero_strength():
+    from vfx import impact_flash
+
+    frame = np.full((8, 8, 3), 90, dtype=np.uint8)
+    assert np.array_equal(impact_flash(frame, 0.0), frame)
+
+
+def test_the_flash_envelope_never_pre_lights_the_hit():
+    """Ramping up before the cut gives the hit away a beat early."""
+    from vfx import flash_envelope
+
+    assert flash_envelope([2.0], 1.95) == 0.0
+    assert flash_envelope([2.0], 2.0) == pytest.approx(1.0)
+    assert 0.0 < flash_envelope([2.0], 2.06) < 1.0
+    assert flash_envelope([2.0], 2.5) == 0.0
+
+
+def test_the_ae_chain_keeps_a_constant_chromatic_split():
+    """The base split is what makes footage read as graded rather than raw."""
+    from vfx import build_effect_chain
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    frame[:, 30:34] = 255  # a hard white bar: any split smears its edges
+    effect = build_effect_chain(base_rgb_split=6.0)
+    assert effect is not None
+    out = effect(frame, 0.0)
+    # The channels no longer line up on the bar's edge.
+    assert not np.array_equal(out[:, :, 0], out[:, :, 2])
+
+
+def test_the_drift_zoom_pushes_across_the_shot():
+    from vfx import build_effect_chain
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    frame[31:33, 31:33] = 255
+    effect = build_effect_chain(drift_zoom=0.2, duration=4.0)
+    assert effect is not None
+    start, end = effect(frame, 0.0), effect(frame, 4.0)
+    # The centre dot grows as the camera pushes in.
+    assert int((end > 40).sum()) > int((start > 40).sum())
+
+
+def test_an_empty_ae_chain_is_still_no_chain():
+    from vfx import build_effect_chain
+
+    assert build_effect_chain(flash_strength=0.4, flash_hits=()) is None
+    assert build_effect_chain(drift_zoom=0.1, duration=0.0) is None
+
+
+def test_the_ae_theme_is_reachable_by_the_names_people_use():
+    for name in ("ae", "AE Edit", "sanchezae", "sanchez_ae", "hype", "velocity"):
+        assert resolve_theme(name).key == "ae_hype", name
+
+
+def test_the_ae_theme_carries_a_real_look_not_just_a_label():
+    theme = THEMES["ae_hype"]
+    assert theme.flash_strength > 0 and theme.base_rgb_split > 0
+    assert theme.drift_zoom > 0 and theme.shake_motion_blur
+    # Velocity pacing: shots shorter than any other mode's.
+    assert theme.segment_seconds[1] < THEMES["anime_edits"].segment_seconds[1]
+    assert theme.default_cut == "zoom_punch"
+
+
+def test_high_energy_footage_is_cut_in_the_ae_school():
+    from themes import choose_theme
+
+    class Analysis:
+        content_type = "anime_edit"
+        brightness = 0.45
+        energy = "high"
+        suggested_theme = ""
+
+    assert choose_theme(Analysis()).key == "ae_hype"
+    # An explicit request still wins over the automatic choice.
+    assert choose_theme(Analysis(), "haunted").key == "haunted"
+
+
+def test_the_ae_grammar_reached_kimis_skill():
+    from editing_skill import EditingSkill
+
+    block = EditingSkill().to_system_block()
+    assert "AE hype grammar" in block
+    assert "0.7-1.8s" in block

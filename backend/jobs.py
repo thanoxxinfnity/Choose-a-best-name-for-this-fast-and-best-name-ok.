@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ae_style import apply_velocity_ramps, is_velocity_theme
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from export_presets import check_source_headroom, describe_cost, resolve_preset
@@ -75,6 +76,7 @@ class JobRequest:
     auto_silence_cut: bool = False
     auto_beat_sync: bool = False
     auto_reframe: bool = False
+    enable_sfx: bool = True
     export_preset: str = "1080p60"
     # Research the niche on YouTube before planning, and learn by example.
     research_trends: bool = False
@@ -370,13 +372,26 @@ class JobManager:
                 plan.outro.active = False
 
             # ------------------------------------------ 2b. micro-features
-            if request.auto_silence_cut or request.auto_beat_sync:
+            # The velocity grammar is built on cutting *on* the beat, not near
+            # it, so beat-sync is not optional for it the way it is elsewhere -
+            # an AE-style edit off the beat is just a fast edit.
+            beat_sync = request.auto_beat_sync or is_velocity_theme(theme.key)
+            if request.auto_silence_cut or beat_sync:
                 plan, micro_notes = apply_micro_features(
                     plan, analyses,
                     silence_cut=request.auto_silence_cut,
-                    beat_sync=request.auto_beat_sync,
+                    beat_sync=beat_sync,
                 )
                 warnings.extend(micro_notes)
+
+            # ------------------------------------------ 2c. velocity ramps
+            if is_velocity_theme(theme.key):
+                ramped = apply_velocity_ramps(plan)
+                if ramped:
+                    self._update(
+                        job_id,
+                        message=f"Velocity pass: ramped into {ramped} beat(s)",
+                    )
 
             self._append_warnings(job_id, warnings)
             self._update(job_id, plan=plan, message=f"Timeline ready: {len(plan.edit_timeline)} segments")
@@ -401,6 +416,7 @@ class JobManager:
                 theme=theme.key,
                 analyses=analyses,
                 auto_reframe=request.auto_reframe,
+                enable_sfx=request.enable_sfx,
                 export=export.key,
             )
             output = self.output_path(job_id)

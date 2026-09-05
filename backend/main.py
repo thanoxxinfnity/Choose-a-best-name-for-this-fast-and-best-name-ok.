@@ -28,7 +28,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Iterator, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 from fastapi import (
     Body,
@@ -75,6 +75,7 @@ from export_presets import PRESETS, describe_cost, resolve_preset
 from editing_skill import load_skill, reset_skill
 import gallery as gallery_store
 from style_library import all_exemplars, validate_library
+from sfx import describe_library, theme_palette
 from themes import THEMES, resolve_theme
 from trend_research import derive_style, research_trends
 from video_providers import (
@@ -217,6 +218,7 @@ async def create_render_job(
     auto_silence_cut: bool = Form(default=False),
     auto_beat_sync: bool = Form(default=False),
     auto_reframe: bool = Form(default=False),
+    enable_sfx: bool = Form(default=True),
     export_preset: str = Form(default="1080p60"),
     research_trends_flag: bool = Form(default=False, alias="research_trends"),
     trend_query: str = Form(default=""),
@@ -285,6 +287,7 @@ async def create_render_job(
             auto_silence_cut=auto_silence_cut,
             auto_beat_sync=auto_beat_sync,
             auto_reframe=auto_reframe,
+            enable_sfx=enable_sfx,
             export_preset=export_preset,
             research_trends=research_trends_flag,
             trend_query=trend_query,
@@ -521,6 +524,17 @@ def list_export_presets() -> List[ExportPresetInfo]:
         )
         for preset in PRESETS.values()
     ]
+
+
+@app.get("/api/v1/sfx")
+def list_sfx() -> Dict[str, Any]:
+    """The synthesised SFX catalogue and which effect each theme reaches for."""
+    return {
+        "effects": describe_library(),
+        "themes": {name: theme_palette(name) for name in THEMES},
+        "default_enabled": settings.enable_sfx,
+        "gain": settings.sfx_audio_gain,
+    }
 
 
 @app.get("/api/v1/voices", response_model=List[VoiceInfo])

@@ -421,6 +421,12 @@ fun EditorScreen(
                     checked = state.autoReframe,
                     onCheckedChange = viewModel::setAutoReframe,
                 )
+                ToggleRow(
+                    title = "Sound effects",
+                    subtitle = "Whooshes on the cuts, impacts on the hits, a riser into the payoff",
+                    checked = state.enableSfx,
+                    onCheckedChange = viewModel::setEnableSfx,
+                )
                 HorizontalDivider()
 
                 Text(

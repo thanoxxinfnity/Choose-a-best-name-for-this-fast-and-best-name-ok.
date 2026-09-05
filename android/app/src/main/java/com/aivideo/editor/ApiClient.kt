@@ -265,6 +265,7 @@ object ApiClient {
         autoSilenceCut: Boolean = false,
         autoBeatSync: Boolean = false,
         autoReframe: Boolean = false,
+        enableSfx: Boolean = true,
         exportPreset: String = "1080p60",
         onProgress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result<JobCreatedDto> = runCatching {
@@ -291,6 +292,7 @@ object ApiClient {
             addFormDataPart("auto_silence_cut", autoSilenceCut.toString())
             addFormDataPart("auto_beat_sync", autoBeatSync.toString())
             addFormDataPart("auto_reframe", autoReframe.toString())
+            addFormDataPart("enable_sfx", enableSfx.toString())
             addFormDataPart("export_preset", exportPreset)
 
             clips.forEach { clip ->

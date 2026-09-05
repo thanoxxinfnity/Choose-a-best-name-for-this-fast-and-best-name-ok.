@@ -90,6 +90,28 @@ CRAFT: Dict[str, List[str]] = {
         "they stop being accents and become a headache.",
         "End on the strongest remaining moment, not on whatever is left over.",
     ],
+    "The AE hype grammar (velocity edits)": [
+        "This school cuts *on* the beat, not near it. A hard cut, a zoom punch "
+        "and an impact flash all land on the same frame as the hit - three "
+        "accents on one frame read as one deliberate impact, spread across "
+        "three frames they read as three mistakes.",
+        "Shots run 0.7-1.8s. The grammar is a run of short shots building to "
+        "one held beat, then straight back into the run; a montage of evenly "
+        "spaced 1s shots has no shape.",
+        "Speed is a punctuation mark: ramp *into* the hit (speed above 1.0 on "
+        "the shot before it) and sit at normal speed on the payoff. Ramping the "
+        "payoff itself throws away the frame you were building to.",
+        "Every third or fourth cut is the biggest one. Reserve the zoom punch "
+        "and the flash for those; use plain jump cuts in between or the accents "
+        "stop meaning anything.",
+        "Text in this style is one or two words, hard-cut in on the hit and hard "
+        "out - never faded, never mid-shot. It punctuates the beat like the cut "
+        "does.",
+        "Do not put a sticker on a flash frame. The flash washes it out and both "
+        "accents are wasted.",
+        "The last hit is the loudest: leave the strongest single frame of the "
+        "footage on the final impact and end within a beat of it.",
+    ],
     "Honesty about the footage": [
         "Only describe subjects that the analysis reports are actually on "
         "screen. Inventing a subject produces stickers and text that do not "

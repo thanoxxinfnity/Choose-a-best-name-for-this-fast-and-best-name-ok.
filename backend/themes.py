@@ -32,6 +32,13 @@ class Theme:
     shake_decay: float = 0.16
     shake_motion_blur: bool = False
     shake_on: str = "impacts"         # impacts | beats | always
+    # Chromatic aberration that is always on, under whatever a hit throws.
+    base_rgb_split: float = 0.0
+    # A blown-out frame on the hit itself, and how long it takes to fall away.
+    flash_strength: float = 0.0
+    flash_decay: float = 0.13
+    # A slow push across the length of every shot.
+    drift_zoom: float = 0.0
 
     # Pacing hints handed to Kimi and to the deterministic editor.
     segment_seconds: Tuple[float, float] = (2.0, 4.0)
@@ -156,6 +163,40 @@ THEMES: Dict[str, Theme] = {
         sticker_animation="pop_up",
         sticker_scale=1.15,
     ),
+    "ae_hype": Theme(
+        key="ae_hype",
+        name="AE Hype Edit",
+        description=(
+            "The After Effects hype grammar: velocity cuts straight onto the beat, "
+            "a blown-out frame on every hit, constant chromatic aberration, motion "
+            "blur through the shake and a slow push on every shot."
+        ),
+        # Crushed blacks, lifted contrast and a cold-highlight / warm-shadow
+        # split - the look the whole school grades toward.
+        grade={"saturation": 1.18, "contrast": 1.34, "brightness": -0.03,
+               "tint": (1.04, 0.99, 1.09), "gamma": 0.90},
+        vignette=0.34,
+        bloom=0.38,
+        shake_kind="directional",
+        shake_intensity=19.0,
+        shake_zoom=0.075,
+        shake_rgb_split=13.0,
+        shake_decay=0.14,
+        shake_motion_blur=True,
+        shake_on="beats",
+        base_rgb_split=1.6,
+        flash_strength=0.34,
+        flash_decay=0.11,
+        drift_zoom=0.035,
+        segment_seconds=(0.7, 1.8),
+        default_cut="zoom_punch",
+        speed_ramp=1.2,
+        text_style="3d_pop",
+        text_colour="#FFFFFF",
+        caption_highlight="#B14BFF",
+        sticker_animation="pop_up",
+        sticker_scale=1.05,
+    ),
 }
 
 DEFAULT_THEME = "normal"
@@ -174,6 +215,16 @@ _ALIASES = {
     "normal_edits": "normal",
     "cinematic": "normal",
     "clean": "normal",
+    # The style is known by its practitioners more than by any label.
+    "ae": "ae_hype",
+    "ae_edit": "ae_hype",
+    "after_effects": "ae_hype",
+    "sanchez": "ae_hype",
+    "sanchezae": "ae_hype",
+    "sanchez_ae": "ae_hype",
+    "hype": "ae_hype",
+    "velocity": "ae_hype",
+    "montage": "ae_hype",
 }
 
 
@@ -191,9 +242,11 @@ def theme_keys() -> List[str]:
 # mood of one frame as "cute playful" must not turn an anime fight edit into a
 # bouncy pastel edit.
 _CONTENT_THEME: Dict[str, str] = {
-    "anime_edit": "anime_edits",
-    "gaming": "anime_edits",
-    "sports": "anime_edits",
+    # These three are the AE hype school's native material - a fight, a clutch
+    # play, a highlight reel are all cut to the same grammar.
+    "anime_edit": "ae_hype",
+    "gaming": "ae_hype",
+    "sports": "ae_hype",
     "dance": "playful",
     "meme": "playful",
     "food": "playful",
@@ -231,7 +284,7 @@ def choose_theme(analysis: object, requested: Optional[str] = None) -> Theme:
     if suggested in THEMES or suggested in _ALIASES:
         return resolve_theme(suggested)
     if energy == "high":
-        return resolve_theme("anime_edits")
+        return resolve_theme("ae_hype")
     if brightness > 0.62:
         return resolve_theme("playful")
     return resolve_theme(DEFAULT_THEME)

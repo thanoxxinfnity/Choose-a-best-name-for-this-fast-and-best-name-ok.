@@ -16,6 +16,7 @@ local.properties
 *.keystore
 captures/
 .cxx/
+.kotlin/
 
 # --- IDE --------------------------------------------------------------------
 .idea/
