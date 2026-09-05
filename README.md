@@ -234,6 +234,45 @@ class rather than a pipeline change:
 configured it still returns a real 1080x1920 clip, and a failed provider call
 degrades to one instead of to nothing.
 
+### Learning what actually performs
+
+There is no model here to fine-tune - Kimi K3 is a hosted API. What raises
+output quality instead is *evidence in the prompt*, from two sources.
+
+**Trend research** (`trend_research.py`) mines a niche with the YouTube Data
+API and reduces the winners to structure: median length, the shot cadence that
+implies, recurring tags and title words, and repeated hook shapes. It is built
+around the quota - `search.list` costs 100 of a 10,000/day budget, so it
+searches once, batches the 1-unit details lookup for every result, and caches
+for six hours. One trap it handles: `videoDuration=short` means *under four
+minutes*, not *a Short*, so a 232s AMV lands in a Shorts sample and drags the
+median with it; long-form outliers are dropped unless the niche genuinely is
+long-form.
+
+**Exemplar edits** (`style_library.py`) are a corpus of real timelines, each
+carrying a one-line reason it works, retrieved by content type and energy and
+injected as few-shot examples. They are stored as the exact JSON the planner
+must emit, so `validate_library()` loads every one through `EditPlan` and a
+broken example cannot ship. Plans from completed renders are kept as *learned*
+exemplars and outrank curated ones at equal relevance, so the editor drifts
+toward what you actually make.
+
+Measured on one real clip (a JJK edit), planning with both against planning
+with neither:
+
+| | Avg shot | On-screen text |
+|---|---|---|
+| Baseline | 1.75s | JUJUTSU KAISEN / DOMAIN EXPANSION / UNLIMITED VOID |
+| With research + exemplars | **1.20s** | **GOJO EDIT 💀 / NO WAY / FOLLOW FOR MORE** |
+
+The research had found that winners in that niche run ~19s, label themselves
+"edit", and put an emoji in the hook - and the planner used all three. That is
+one sample, not an eval; treat it as a demonstration that the signal reaches
+the model, not as a measured win rate.
+
+Enable per render with `research_trends` (and optionally `trend_query`);
+`use_exemplars` is on by default.
+
 ### Auto edit micro-features
 
 All three run locally on the analysis pass - no API key, no model download.

@@ -314,7 +314,20 @@ class KimiOrchestrator:
         """Return ``(plan, warnings)``; never raises for recoverable failures."""
         warnings: List[str] = []
         available = sum(max(clip.duration, 0.0) for clip in clips)
-        target = target_duration or min(max(available * 0.55, 12.0), 75.0)
+        target = target_duration
+        if target is None and trends is not None and not getattr(trends, "error", ""):
+            # The research measured how long the winners in this niche run; that
+            # beats a fraction of whatever footage happens to have been uploaded.
+            from trend_research import derive_style
+
+            researched = derive_style(trends).get("target_duration")
+            if researched:
+                target = float(researched)
+        if target is None:
+            target = min(max(available * 0.55, 12.0), 75.0)
+        # Never ask for more than the footage can fill without heavy reuse.
+        if available:
+            target = min(target, available * 1.6)
 
         if not self.is_configured:
             warnings.append(

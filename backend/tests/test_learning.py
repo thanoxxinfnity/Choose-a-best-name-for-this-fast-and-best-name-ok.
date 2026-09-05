@@ -212,3 +212,43 @@ def test_learned_library_is_pruned(tmp_path, monkeypatch):
             CURATED[0].plan, content_type=f"t{index}", energy="high", theme="normal",
         )
     assert len(style_library.load_learned()) <= 3
+
+
+# --------------------------------------------- research drives the planner --
+
+def test_researched_length_beats_the_footage_heuristic():
+    """The measured winning length should set the target, not clip duration."""
+    from orchestrator import KimiOrchestrator
+    from schemas import ClipInfo
+
+    orchestrator = KimiOrchestrator(api_key="")   # forces the deterministic path
+    clips = [ClipInfo(filename="a.mp4", path="x", duration=16.43)]
+    trends = summarise("q", [_video(video_id=str(i), duration=19) for i in range(5)])
+
+    with_research, _ = orchestrator.build_plan("x", clips, trends=trends)
+    without, _ = orchestrator.build_plan("x", clips, trends=None)
+    assert with_research.total_duration > without.total_duration
+    assert with_research.total_duration == pytest.approx(19, abs=6)
+
+
+def test_an_explicit_target_still_wins_over_research():
+    from orchestrator import KimiOrchestrator
+    from schemas import ClipInfo
+
+    orchestrator = KimiOrchestrator(api_key="")
+    clips = [ClipInfo(filename="a.mp4", path="x", duration=40.0)]
+    trends = summarise("q", [_video(video_id=str(i), duration=45) for i in range(5)])
+    plan, _ = orchestrator.build_plan("x", clips, target_duration=12.0, trends=trends)
+    assert plan.total_duration == pytest.approx(12, abs=4)
+
+
+def test_the_target_is_capped_by_available_footage():
+    """A 60s niche target must not demand 60s from a 5s clip."""
+    from orchestrator import KimiOrchestrator
+    from schemas import ClipInfo
+
+    orchestrator = KimiOrchestrator(api_key="")
+    clips = [ClipInfo(filename="a.mp4", path="x", duration=5.0)]
+    trends = summarise("q", [_video(video_id=str(i), duration=60) for i in range(5)])
+    plan, _ = orchestrator.build_plan("x", clips, trends=trends)
+    assert plan.total_duration <= 5.0 * 1.6 + 2
