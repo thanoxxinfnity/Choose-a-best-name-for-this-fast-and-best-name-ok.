@@ -144,7 +144,8 @@ def _check_footage_exists(
         if source >= len(clip_durations):
             diagnosis.findings.append(Finding(
                 "missing_source", BLOCKING,
-                f"points at clip {source + 1}, but only {len(clip_durations)} were uploaded.",
+                f"points at clip {source + 1}, but only {len(clip_durations)} "
+                f"{'clip was' if len(clip_durations) == 1 else 'clips were'} uploaded.",
                 where=index, fixed=treat,
             ))
             if treat:
