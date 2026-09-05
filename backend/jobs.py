@@ -61,6 +61,9 @@ class JobRequest:
     enable_captions: bool = True
     voice_accent: str = "indian_accent"
     theme: str = "auto"
+    # Tri-state on purpose: None = let Kimi decide from the prompt, True/False =
+    # the user pressed the button and their choice wins.
+    enable_voiceover: Optional[bool] = None
     enable_animation: bool = False
     max_animations: int = 1
     enable_intro: bool = False
@@ -288,6 +291,18 @@ class JobManager:
             plan.theme = theme.key
             if request.voice_accent:
                 plan.audio.voice_accent = request.voice_accent
+
+            if request.enable_voiceover is False:
+                plan.audio.use_puter_tts = False
+                plan.audio.tts_lines = []
+                plan.audio.tts_script = ""
+                # With nobody speaking there is nothing to duck under.
+                plan.audio.background_music_gain = 1.0
+            elif request.enable_voiceover is True and not plan.audio.has_voiceover:
+                self._append_warnings(job_id, [
+                    "Voiceover was switched on but Kimi wrote no narration for this "
+                    "edit - rendering without it."
+                ])
             if not request.enable_animation:
                 for segment in plan.edit_timeline:
                     segment.puter_animate = None

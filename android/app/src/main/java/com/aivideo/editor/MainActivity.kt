@@ -291,19 +291,39 @@ fun EditorScreen(
                     )
                 } else Unit
 
-                Text("Voiceover voice", style = MaterialTheme.typography.bodyMedium)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val voices = state.voices.ifEmpty {
-                        VOICE_ACCENTS.map { (key, label) -> VoiceDto(key = key, label = label) }
+                ToggleRow(
+                    title = "AI voiceover",
+                    subtitle = if (state.enableVoiceover) {
+                        "Puter TTS narration, timed to the cut"
+                    } else {
+                        "Off - the edit keeps only its original audio"
+                    },
+                    checked = state.enableVoiceover,
+                    onCheckedChange = viewModel::setEnableVoiceover,
+                )
+
+                if (state.enableVoiceover) {
+                    Text("Voiceover voice", style = MaterialTheme.typography.bodyMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val voices = state.voices.ifEmpty {
+                            VOICE_ACCENTS.map { (key, label) -> VoiceDto(key = key, label = label) }
+                        }
+                        voices.forEach { voice ->
+                            FilterChip(
+                                selected = state.voiceAccent == voice.key,
+                                onClick = { viewModel.setVoiceAccent(voice.key) },
+                                label = { Text(voice.label) },
+                                leadingIcon = if (voice.deep) {
+                                    { Text("\uD83C\uDF11") }
+                                } else null,
+                            )
+                        }
                     }
-                    voices.forEach { voice ->
-                        FilterChip(
-                            selected = state.voiceAccent == voice.key,
-                            onClick = { viewModel.setVoiceAccent(voice.key) },
-                            label = { Text(voice.label) },
-                            leadingIcon = if (voice.deep) {
-                                { Text("\uD83C\uDF11") }
-                            } else null,
+                    state.voices.firstOrNull { it.key == state.voiceAccent }?.let { voice ->
+                        Text(
+                            "${voice.label} - ${voice.voiceId} (${voice.language})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

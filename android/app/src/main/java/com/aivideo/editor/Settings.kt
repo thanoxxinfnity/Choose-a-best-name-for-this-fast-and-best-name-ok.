@@ -81,6 +81,7 @@ object SecureStore {
     const val KEY_BACKEND_URL = "backend_url"
     const val KEY_VOICE_ACCENT = "voice_accent"
     const val KEY_CAPTIONS = "captions_enabled"
+    const val KEY_VOICEOVER = "voiceover_enabled"
 
     @Volatile
     private var cached: SharedPreferences? = null
@@ -143,6 +144,9 @@ object SecureStore {
 
     fun captionsEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_CAPTIONS, true)
+
+    fun voiceoverEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_VOICEOVER, true)
 
     private fun read(context: Context, key: String): String =
         prefs(context).getString(key, "").orEmpty().trim()

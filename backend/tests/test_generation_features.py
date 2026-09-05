@@ -311,3 +311,58 @@ def test_shaping_preserves_duration_within_the_tempo_factor(tmp_path):
     # Only the profile's tempo should change the length; the pitch shift is
     # compensated. Reverb adds a short tail.
     assert duration(out) == pytest.approx(duration(src) / profile.tempo, abs=0.5)
+
+
+# --------------------------------------------------------- voiceover switch --
+
+def _apply_voiceover_switch(plan, enable_voiceover):
+    """Mirror of the override JobManager._run applies to the plan."""
+    if enable_voiceover is False:
+        plan.audio.use_puter_tts = False
+        plan.audio.tts_lines = []
+        plan.audio.tts_script = ""
+        plan.audio.background_music_gain = 1.0
+    return plan
+
+
+def _voiced_plan():
+    return _plan(audio=AudioSpec(
+        use_puter_tts=True, voice_accent="deep_dark",
+        tts_lines=[TtsLine(text="Andhere mein ek shakti", start_time=0.5)],
+    ))
+
+
+@pytest.mark.parametrize("switch,expected", [(None, True), (True, True), (False, False)])
+def test_voiceover_switch_states(switch, expected):
+    plan = _apply_voiceover_switch(_voiced_plan(), switch)
+    assert plan.audio.has_voiceover is expected
+
+
+def test_voiceover_off_silences_tts_and_unducks_the_bed(source, tmp_path, monkeypatch):
+    """The button must really stop synthesis, not just mute it."""
+    plan = _apply_voiceover_switch(_voiced_plan(), False)
+    puter = FakePuter()
+    monkeypatch.setattr(video_renderer, "PuterVideoClient", lambda api_key="": FakeVideoClient())
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=[source], workspace=tmp_path / "ws_off", puter=puter,
+    )
+    out = renderer.render(tmp_path / "off.mp4")
+
+    assert puter.tts_calls == [], "no speech should have been synthesised"
+    assert plan.audio.background_music_gain == 1.0, "the bed should not be ducked"
+    info = probe_clip(out)
+    assert info["has_audio"] is True, "the original audio must survive"
+    # Without narration the edit is exactly the two 2s segments.
+    assert info["duration"] == pytest.approx(4.0, abs=0.6)
+
+
+def test_voiceover_on_still_synthesises(source, tmp_path, monkeypatch):
+    plan = _apply_voiceover_switch(_voiced_plan(), True)
+    puter = FakePuter()
+    monkeypatch.setattr(video_renderer, "PuterVideoClient", lambda api_key="": FakeVideoClient())
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=[source], workspace=tmp_path / "ws_on", puter=puter,
+    )
+    renderer.render(tmp_path / "on.mp4")
+    assert len(puter.tts_calls) == 1
+    assert puter.tts_calls[0][1] == "deep_dark"

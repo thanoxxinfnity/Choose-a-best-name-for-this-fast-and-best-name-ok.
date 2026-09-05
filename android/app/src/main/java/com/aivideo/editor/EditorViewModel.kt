@@ -25,6 +25,7 @@ data class EditorUiState(
     val maxStickers: Int = 4,
     val maxInpaints: Int = 2,
     val theme: String = "auto",
+    val enableVoiceover: Boolean = true,
     val enableAnimation: Boolean = false,
     val maxAnimations: Int = 1,
     val enableIntro: Boolean = false,
@@ -68,6 +69,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         EditorUiState(
             captionsEnabled = SecureStore.captionsEnabled(application),
             voiceAccent = SecureStore.voiceAccent(application),
+            enableVoiceover = SecureStore.voiceoverEnabled(application),
         )
     )
     val state: StateFlow<EditorUiState> = _state.asStateFlow()
@@ -120,6 +122,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setTheme(value: String) = _state.update { it.copy(theme = value) }
+
+    fun setEnableVoiceover(value: Boolean) {
+        SecureStore.writeBoolean(context, SecureStore.KEY_VOICEOVER, value)
+        _state.update { it.copy(enableVoiceover = value) }
+    }
 
     fun setEnableAnimation(value: Boolean) = _state.update { it.copy(enableAnimation = value) }
 
@@ -186,6 +193,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     maxStickers = current.maxStickers,
                     maxInpaints = current.maxInpaints,
                     theme = current.theme,
+                    enableVoiceover = current.enableVoiceover,
                     enableAnimation = current.enableAnimation,
                     maxAnimations = current.maxAnimations,
                     enableIntro = current.enableIntro,

@@ -184,6 +184,7 @@ object ApiClient {
         maxStickers: Int = 4,
         maxInpaints: Int = 2,
         theme: String = "auto",
+        enableVoiceover: Boolean = true,
         enableAnimation: Boolean = false,
         maxAnimations: Int = 1,
         enableIntro: Boolean = false,
@@ -205,6 +206,7 @@ object ApiClient {
             addFormDataPart("max_stickers", maxStickers.toString())
             addFormDataPart("max_inpaints", maxInpaints.toString())
             addFormDataPart("theme", theme)
+            addFormDataPart("enable_voiceover", enableVoiceover.toString())
             addFormDataPart("enable_animation", enableAnimation.toString())
             addFormDataPart("max_animations", maxAnimations.toString())
             addFormDataPart("enable_intro", enableIntro.toString())
