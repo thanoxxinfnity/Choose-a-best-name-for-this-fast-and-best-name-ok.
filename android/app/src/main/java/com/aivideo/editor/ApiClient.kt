@@ -12,6 +12,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.Headers
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
@@ -63,6 +66,26 @@ data class ThemeDto(
     val description: String = "",
     @SerialName("default_cut") val defaultCut: String = "",
     val shake: String = "",
+)
+
+@Serializable
+data class VideoProviderDto(
+    val key: String,
+    val label: String,
+    @SerialName("text_to_video") val textToVideo: Boolean = false,
+    @SerialName("image_to_video") val imageToVideo: Boolean = false,
+    val models: List<String> = emptyList(),
+    @SerialName("requires_key") val requiresKey: Boolean = true,
+    val configured: Boolean = false,
+    val notes: String = "",
+)
+
+/** A clip produced by the generation endpoints, already on disk. */
+data class GeneratedClip(
+    val file: File,
+    val provider: String,
+    val model: String,
+    val elapsedSeconds: Double,
 )
 
 @Serializable
@@ -276,6 +299,104 @@ object ApiClient {
         }
     }
 
+    /** Generation backends and which of them are usable right now. */
+    fun listVideoProviders(context: Context): Result<List<VideoProviderDto>> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/video/providers")
+            .headers(authHeaders(context)).get().build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(
+                kotlinx.serialization.builtins.ListSerializer(VideoProviderDto.serializer()), body,
+            )
+        }
+    }
+
+    /** Text-to-video. Streams the finished MP4 into the app cache. */
+    fun generateTextToVideo(
+        context: Context,
+        prompt: String,
+        seconds: Float,
+        resolution: String = "720x1280",
+        provider: String? = null,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): Result<GeneratedClip> = runCatching {
+        require(prompt.isNotBlank()) { "Describe the clip you want." }
+        val payload = buildJsonObject {
+            put("prompt", prompt.trim())
+            put("seconds", seconds.toDouble())
+            put("resolution", resolution)
+            provider?.let { put("provider", it) }
+        }
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/video/text-to-video")
+            .headers(authHeaders(context))
+            .post(json.encodeToString(JsonObject.serializer(), payload)
+                .toRequestBody("application/json".toMediaType()))
+            .build()
+        executeGeneration(context, request, "moja_t2v", onProgress)
+    }
+
+    /** Image-to-video. Works without any key via the offline motion provider. */
+    fun generateImageToVideo(
+        context: Context,
+        image: Uri,
+        prompt: String,
+        seconds: Float,
+        motionStrength: Float = 0.7f,
+        provider: String? = null,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): Result<GeneratedClip> = runCatching {
+        val described = describeUri(context, image)
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            addFormDataPart(
+                "image", described.displayName,
+                UriRequestBody(
+                    context, image,
+                    described.mimeType.toMediaTypeOrNull() ?: "image/png".toMediaType(),
+                    described.sizeBytes,
+                ) {},
+            )
+            addFormDataPart("prompt", prompt.trim())
+            addFormDataPart("seconds", seconds.toInt().toString())
+            addFormDataPart("motion_strength", motionStrength.toString())
+            provider?.let { addFormDataPart("provider_key", it) }
+        }.build()
+
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/video/image-to-video")
+            .headers(authHeaders(context))
+            .post(body)
+            .build()
+        executeGeneration(context, request, "moja_i2v", onProgress)
+    }
+
+    private fun executeGeneration(
+        context: Context,
+        request: Request,
+        prefix: String,
+        onProgress: (Long, Long) -> Unit,
+    ): GeneratedClip {
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException(errorMessage(response, response.body?.string().orEmpty()))
+            }
+            val body = response.body ?: throw IOException("Empty response body")
+            val target = File(context.cacheDir, "$prefix-${System.currentTimeMillis()}.mp4")
+            target.outputStream().use { output ->
+                copyWithProgress(body.byteStream(), output, body.contentLength(), onProgress)
+            }
+            if (target.length() == 0L) throw IOException("The provider returned an empty clip.")
+            return GeneratedClip(
+                file = target,
+                provider = response.header("X-Moja-Provider").orEmpty(),
+                model = response.header("X-Moja-Model").orEmpty(),
+                elapsedSeconds = response.header("X-Moja-Elapsed")?.toDoubleOrNull() ?: 0.0,
+            )
+        }
+    }
+
     /** Export presets the encoder supports, up to 4K 60fps. */
     fun listExportPresets(context: Context): Result<List<ExportPresetDto>> = runCatching {
         val request = Request.Builder()
@@ -394,6 +515,64 @@ object ApiClient {
                 Uri.fromFile(file)
             }
         }
+    }
+
+    /** Copy a local file the app produced into Movies/Moja AI. */
+    fun saveFileToGallery(
+        context: Context,
+        file: File,
+        fileName: String = file.name,
+    ): Result<Uri> = runCatching {
+        file.inputStream().use { input ->
+            writeToGallery(context, fileName, file.length()) { output ->
+                copyWithProgress(input, output, file.length()) { _, _ -> }
+            }
+        }
+    }
+
+    private inline fun writeToGallery(
+        context: Context,
+        fileName: String,
+        @Suppress("UNUSED_PARAMETER") sizeHint: Long,
+        write: (OutputStream) -> Unit,
+    ): Uri {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/Moja AI")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(collection, values)
+                ?: throw IOException("MediaStore refused to create the file")
+            try {
+                resolver.openOutputStream(uri)?.use(write)
+                    ?: throw IOException("Could not open the output stream")
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                return uri
+            } catch (error: Throwable) {
+                resolver.delete(uri, null, null)
+                throw error
+            }
+        }
+        @Suppress("DEPRECATION")
+        val directory = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+            "Moja AI",
+        )
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IOException("Could not create ${directory.absolutePath}")
+        }
+        val target = File(directory, fileName)
+        FileOutputStream(target).use(write)
+        android.media.MediaScannerConnection.scanFile(
+            context, arrayOf(target.absolutePath), arrayOf("video/mp4"), null,
+        )
+        return Uri.fromFile(target)
     }
 
     private fun copyWithProgress(

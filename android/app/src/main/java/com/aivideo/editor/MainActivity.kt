@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MovieCreation
@@ -100,6 +101,7 @@ class MainActivity : ComponentActivity() {
             MojaAITheme {
                 EditorScreen(
                     onOpenSettings = { startActivity(SettingsActivity.intent(this)) },
+                    onOpenStudio = { startActivity(GenerateActivity.intent(this)) },
                     onShare = { uri -> shareVideo(uri) },
                 )
             }
@@ -120,6 +122,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun EditorScreen(
     onOpenSettings: () -> Unit,
+    onOpenStudio: () -> Unit,
     onShare: (Uri) -> Unit,
     viewModel: EditorViewModel = viewModel(),
 ) {
@@ -171,6 +174,9 @@ fun EditorScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenStudio) {
+                        Icon(Icons.Filled.AutoAwesome, contentDescription = "AI Studio")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }

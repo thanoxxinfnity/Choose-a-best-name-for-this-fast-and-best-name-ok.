@@ -47,6 +47,13 @@
         </activity>
 
         <activity
+            android:name=".GenerateActivity"
+            android:exported="false"
+            android:label="AI Studio"
+            android:parentActivityName=".MainActivity"
+            android:theme="@style/Theme.MojaAI" />
+
+        <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:label="@string/settings_title"
