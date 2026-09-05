@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from export_presets import check_source_headroom, describe_cost, resolve_preset
+from editing_skill import learn_from_research
 from micro_features import apply_micro_features
 from style_library import remember_plan
 from trend_research import derive_style, research_trends
@@ -298,6 +299,13 @@ class JobManager:
                         trends = None
                     else:
                         style = derive_style(trends)
+                        # Fold the measurement into Kimi's standing skill, so
+                        # the next render in this niche starts already knowing.
+                        niche = (analyses[0].content_type if analyses else "") or "general"
+                        if learn_from_research(niche, trends, style):
+                            self._append_warnings(job_id, [
+                                f"Editing skill updated with a '{niche}' playbook."
+                            ])
                         self._append_warnings(job_id, [
                             f"Researched {trends.sampled} top '{query}' shorts: winners run "
                             f"~{trends.median_duration:.0f}s with about "

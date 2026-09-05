@@ -72,6 +72,7 @@ from schemas import (
     VoiceInfo,
 )
 from export_presets import PRESETS, describe_cost, resolve_preset
+from editing_skill import load_skill, reset_skill
 from style_library import all_exemplars, validate_library
 from themes import THEMES, resolve_theme
 from trend_research import derive_style, research_trends
@@ -572,6 +573,40 @@ def get_trends(
     payload["derived_style"] = derive_style(report)
     payload["prompt_block"] = report.to_prompt_block()
     return payload
+
+
+@app.get("/api/v1/skill")
+def get_skill(niche: str = ""):
+    """The editing craft Kimi carries into every render, plus what it learned."""
+    skill = load_skill(refresh=True)
+    return {
+        "version": skill.version,
+        "updated_at": skill.updated_at,
+        "craft": skill.craft,
+        "rule_count": sum(len(rules) for rules in skill.craft.values()),
+        "playbooks": [
+            {
+                "niche": playbook.niche,
+                "median_duration": playbook.median_duration,
+                "shot_seconds": playbook.shot_seconds,
+                "suggested_cuts": playbook.suggested_cuts,
+                "hooks": playbook.hooks,
+                "keywords": playbook.keywords,
+                "sampled": playbook.sampled,
+                "observations": playbook.observations,
+            }
+            for playbook in skill.playbooks.values()
+        ],
+        "system_block": skill.to_system_block(niche=niche),
+    }
+
+
+@app.post("/api/v1/skill/reset")
+def post_skill_reset():
+    """Drop everything learned and go back to the curated craft."""
+    skill = reset_skill()
+    return {"reset": True, "rule_count": sum(len(r) for r in skill.craft.values()),
+            "playbooks": 0}
 
 
 @app.get("/api/v1/styles")

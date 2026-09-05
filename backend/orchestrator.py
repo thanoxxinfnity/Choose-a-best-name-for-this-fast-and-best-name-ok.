@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 from config import settings
+from editing_skill import load_skill
 from style_library import build_prompt_section
 from schemas import (
     AudioSpec,
@@ -310,6 +311,7 @@ class KimiOrchestrator:
         max_animations: int = 0,
         trends: Optional[Any] = None,
         use_exemplars: bool = True,
+        use_skill: bool = True,
     ) -> tuple[EditPlan, List[str]]:
         """Return ``(plan, warnings)``; never raises for recoverable failures."""
         warnings: List[str] = []
@@ -341,6 +343,12 @@ class KimiOrchestrator:
             analyses=analyses, theme=theme, max_animations=max_animations,
             trends=trends, use_exemplars=use_exemplars,
         )
+        system_prompt = SYSTEM_PROMPT
+        if use_skill:
+            niche = str(getattr(analyses[0], "content_type", "") or "") if analyses else ""
+            skill_block = load_skill().to_system_block(niche=niche)
+            if skill_block:
+                system_prompt = f"{SYSTEM_PROMPT}\n\n{skill_block}"
 
         raw: Optional[str] = None
         deadline = time.monotonic() + settings.nim_plan_budget_seconds
@@ -352,7 +360,9 @@ class KimiOrchestrator:
                 )
                 break
             try:
-                raw = self._chat(model, user_message, deadline=deadline)
+                raw = self._chat(
+                    model, user_message, deadline=deadline, system_prompt=system_prompt,
+                )
                 if model != self.model:
                     warnings.append(f"Kimi model '{self.model}' unavailable - used '{model}'.")
                     self.model = model
@@ -394,12 +404,18 @@ class KimiOrchestrator:
             candidates.append(settings.nim_fallback_model)
         return candidates
 
-    def _chat(self, model: str, user_message: str, deadline: Optional[float] = None) -> str:
+    def _chat(
+        self,
+        model: str,
+        user_message: str,
+        deadline: Optional[float] = None,
+        system_prompt: Optional[str] = None,
+    ) -> str:
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
             "temperature": settings.nim_temperature,
