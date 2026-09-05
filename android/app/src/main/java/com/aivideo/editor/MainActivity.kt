@@ -422,6 +422,12 @@ fun EditorScreen(
                     onCheckedChange = viewModel::setAutoReframe,
                 )
                 ToggleRow(
+                    title = "Find the moment",
+                    subtitle = "Searches a long video or film and edits only its best window",
+                    checked = state.autoHighlight,
+                    onCheckedChange = viewModel::setAutoHighlight,
+                )
+                ToggleRow(
                     title = "Sound effects",
                     subtitle = "Whooshes on the cuts, impacts on the hits, a riser into the payoff",
                     checked = state.enableSfx,

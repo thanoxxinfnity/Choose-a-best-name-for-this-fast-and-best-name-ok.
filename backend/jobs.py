@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ae_style import apply_velocity_ramps, is_velocity_theme
+from highlights import MIN_SEARCHABLE, find_highlights
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from export_presets import check_source_headroom, describe_cost, resolve_preset
@@ -30,7 +32,7 @@ from style_library import remember_plan
 from trend_research import derive_style, research_trends
 from themes import choose_theme, resolve_theme
 from video_analyzer import VideoAnalysis, analyse_video
-from puter_integration import PuterClient
+from puter_integration import PuterClient, ffmpeg_binary
 from schemas import ClipInfo, EditPlan, JobStage, JobStatus
 from video_renderer import RenderError, VideoRenderer, probe_clip
 
@@ -77,6 +79,8 @@ class JobRequest:
     auto_beat_sync: bool = False
     auto_reframe: bool = False
     enable_sfx: bool = True
+    # Long source in, short clip out: find the moment before editing it.
+    auto_highlight: bool = True
     export_preset: str = "1080p60"
     # Research the niche on YouTube before planning, and learn by example.
     research_trends: bool = False
@@ -88,6 +92,30 @@ class JobRequest:
     max_inpaints: int = 2
     plan_override: Optional[EditPlan] = None
     extra: Dict[str, str] = field(default_factory=dict)
+
+
+def _cut_window(source: Path, destination: Path, start: float, end: float) -> bool:
+    """Extract one window, re-encoding so the cut lands on the frame asked for.
+
+    A stream copy would snap the start back to the previous keyframe, which on
+    a film is up to ten seconds of the wrong shot.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            ffmpeg_binary(), "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{max(start, 0.0):.3f}", "-i", str(source),
+            "-t", f"{max(end - start, 1.0):.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+            str(destination),
+        ],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not destination.exists():
+        logger.warning("highlight cut failed: %s", result.stderr[:300])
+        return False
+    return True
 
 
 class JobManager:
@@ -234,6 +262,57 @@ class JobManager:
         if cancelled:
             raise RenderError("Job cancelled by the client.")
 
+    def _trim_to_highlights(
+        self, job_id: str, request: "JobRequest", workspace: Path
+    ) -> List[Path]:
+        """Replace any long source with its strongest window.
+
+        Only sources long enough to be worth searching are touched; a clip the
+        user already trimmed is left exactly as they gave it.
+        """
+        target = float(request.target_duration or 0.0) or 35.0
+        trimmed: List[Path] = []
+        notes: List[str] = []
+
+        for index, clip_path in enumerate(request.clip_paths):
+            info = probe_clip(clip_path)
+            duration = float(info.get("duration") or 0.0)
+            if duration < MIN_SEARCHABLE:
+                trimmed.append(clip_path)
+                continue
+
+            self._update(
+                job_id, stage=JobStage.ANALYZING, progress=0.01,
+                message=f"Searching {duration / 60:.0f} minutes for the moment worth cutting",
+            )
+            report = find_highlights(clip_path, duration=duration,
+                                     target_seconds=target, count=1)
+            if report.error or not report.highlights:
+                notes.append(
+                    f"Clip {index + 1} is {duration / 60:.0f} minutes long but no "
+                    f"highlight could be found in it ({report.error or 'no signal'}); "
+                    f"editing it whole."
+                )
+                trimmed.append(clip_path)
+                continue
+
+            best = report.highlights[0]
+            destination = workspace / f"highlight_{index:02d}.mp4"
+            if not _cut_window(clip_path, destination, best.start, best.end):
+                notes.append(f"Clip {index + 1}: the highlight could not be extracted.")
+                trimmed.append(clip_path)
+                continue
+
+            trimmed.append(destination)
+            notes.append(
+                f"Clip {index + 1}: cut down to {best.start:.0f}s-{best.end:.0f}s "
+                f"({', '.join(best.reasons)})."
+            )
+
+        if notes:
+            self._append_warnings(job_id, notes)
+        return trimmed
+
     # ------------------------------------------------------------ pipeline
     def _run(self, job_id: str, request: JobRequest) -> None:
         workspace = self.workspace(job_id)
@@ -247,6 +326,14 @@ class JobManager:
                 raise RenderError(f"Job {job_id} disappeared before it started.")
 
             puter = PuterClient(api_key=request.credentials.resolved_puter_key())
+
+            # ---------------------------------- 0. find the clip in the film
+            # A two hour source is not footage to edit, it is footage to search.
+            # Trimming to the moment first means everything downstream - the
+            # vision pass, the planner, the render - works on a clip instead of
+            # trying to summarise a feature film.
+            if request.auto_highlight:
+                request.clip_paths = self._trim_to_highlights(job_id, request, workspace)
 
             # -------------------------------------- 1. look at the footage
             self._update(job_id, stage=JobStage.ANALYZING, progress=0.02,

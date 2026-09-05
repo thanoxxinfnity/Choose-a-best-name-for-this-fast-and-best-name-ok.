@@ -75,6 +75,7 @@ from export_presets import PRESETS, describe_cost, resolve_preset
 from editing_skill import load_skill, reset_skill
 import gallery as gallery_store
 from style_library import all_exemplars, validate_library
+from highlights import find_highlights
 from sfx import describe_library, theme_palette
 from themes import THEMES, resolve_theme
 from trend_research import derive_style, research_trends
@@ -219,6 +220,7 @@ async def create_render_job(
     auto_beat_sync: bool = Form(default=False),
     auto_reframe: bool = Form(default=False),
     enable_sfx: bool = Form(default=True),
+    auto_highlight: bool = Form(default=True),
     export_preset: str = Form(default="1080p60"),
     research_trends_flag: bool = Form(default=False, alias="research_trends"),
     trend_query: str = Form(default=""),
@@ -288,6 +290,7 @@ async def create_render_job(
             auto_beat_sync=auto_beat_sync,
             auto_reframe=auto_reframe,
             enable_sfx=enable_sfx,
+            auto_highlight=auto_highlight,
             export_preset=export_preset,
             research_trends=research_trends_flag,
             trend_query=trend_query,
@@ -574,6 +577,33 @@ async def analyze_upload(
         payload["theme"] = resolve_theme(analysis.suggested_theme).key
         payload["prompt_block"] = analysis.to_prompt_block()
         return payload
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@app.post("/api/v1/highlights")
+async def find_upload_highlights(
+    video: UploadFile = File(...),
+    target_seconds: float = Form(default=35.0),
+    count: int = Form(default=3),
+):
+    """Which windows of a long source are worth cutting into a short.
+
+    Takes an episode, a match or a film and returns the candidate moments with
+    the reason each one scored, so the choice can be shown rather than assumed.
+    """
+    suffix = Path(video.filename or "source.mp4").suffix.lower() or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=settings.cache_dir) as handle:
+        while chunk := await video.read(CHUNK_SIZE):
+            handle.write(chunk)
+        path = Path(handle.name)
+    try:
+        report = find_highlights(
+            path,
+            target_seconds=max(5.0, min(float(target_seconds), 180.0)),
+            count=max(1, min(int(count), 10)),
+        )
+        return report.to_dict()
     finally:
         path.unlink(missing_ok=True)
 
