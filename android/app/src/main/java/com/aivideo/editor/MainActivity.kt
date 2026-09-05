@@ -434,6 +434,12 @@ fun EditorScreen(
                     onCheckedChange = viewModel::setAutoHighlight,
                 )
                 ToggleRow(
+                    title = "Motion transitions",
+                    subtitle = "Whip pans, glitch slices and zoom blurs on the bigger cuts",
+                    checked = state.enableTransitions,
+                    onCheckedChange = viewModel::setEnableTransitions,
+                )
+                ToggleRow(
                     title = "Sound effects",
                     subtitle = "Whooshes on the cuts, impacts on the hits, a riser into the payoff",
                     checked = state.enableSfx,

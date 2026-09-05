@@ -80,6 +80,7 @@ class JobRequest:
     auto_beat_sync: bool = False
     auto_reframe: bool = False
     enable_sfx: bool = True
+    enable_transitions: bool = True
     # Long source in, short clip out: find the moment before editing it.
     auto_highlight: bool = True
     # Read the timeline back and repair it before rendering it.
@@ -567,6 +568,7 @@ class JobManager:
                 analyses=analyses,
                 auto_reframe=request.auto_reframe,
                 enable_sfx=request.enable_sfx,
+                enable_transitions=request.enable_transitions,
                 export=export.key,
             )
             output = self.output_path(job_id)

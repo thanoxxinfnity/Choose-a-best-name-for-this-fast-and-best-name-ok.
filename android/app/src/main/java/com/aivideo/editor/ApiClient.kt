@@ -266,6 +266,7 @@ object ApiClient {
         autoBeatSync: Boolean = false,
         autoReframe: Boolean = false,
         enableSfx: Boolean = true,
+        enableTransitions: Boolean = true,
         autoHighlight: Boolean = true,
         reviewPlan: Boolean = true,
         exportPreset: String = "1080p60",
@@ -295,6 +296,7 @@ object ApiClient {
             addFormDataPart("auto_beat_sync", autoBeatSync.toString())
             addFormDataPart("auto_reframe", autoReframe.toString())
             addFormDataPart("enable_sfx", enableSfx.toString())
+            addFormDataPart("enable_transitions", enableTransitions.toString())
             addFormDataPart("auto_highlight", autoHighlight.toString())
             addFormDataPart("review_plan", reviewPlan.toString())
             addFormDataPart("export_preset", exportPreset)

@@ -271,6 +271,10 @@ class TimelineSegment(BaseModel):
     # it, in which case the renderer round robins across the uploads.
     source_index: Optional[int] = None
     speed: float = 1.0
+    # A named motion-graphics transition leading INTO this segment. Left unset
+    # the theme decides, and most cuts get none - a transition on every cut is
+    # the same as a transition on none.
+    transition: Optional[str] = None
     puter_sticker: Optional[PuterSticker] = None
     puter_inpaint: Optional[PuterInpaint] = None
     puter_animate: Optional[PuterAnimate] = None

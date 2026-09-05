@@ -76,6 +76,7 @@ from editing_skill import load_skill, reset_skill
 import gallery as gallery_store
 from style_library import all_exemplars, validate_library
 from highlights import find_highlights
+from motion_graphics import THEME_TRANSITIONS, transition_names
 from sfx import describe_library, theme_palette
 from themes import THEMES, resolve_theme
 from trend_research import derive_style, research_trends
@@ -220,6 +221,7 @@ async def create_render_job(
     auto_beat_sync: bool = Form(default=False),
     auto_reframe: bool = Form(default=False),
     enable_sfx: bool = Form(default=True),
+    enable_transitions: bool = Form(default=True),
     auto_highlight: bool = Form(default=True),
     review_plan: bool = Form(default=True),
     export_preset: str = Form(default="1080p60"),
@@ -291,6 +293,7 @@ async def create_render_job(
             auto_beat_sync=auto_beat_sync,
             auto_reframe=auto_reframe,
             enable_sfx=enable_sfx,
+            enable_transitions=enable_transitions,
             auto_highlight=auto_highlight,
             review_plan=review_plan,
             export_preset=export_preset,
@@ -529,6 +532,18 @@ def list_export_presets() -> List[ExportPresetInfo]:
         )
         for preset in PRESETS.values()
     ]
+
+
+@app.get("/api/v1/transitions")
+def list_transitions() -> Dict[str, Any]:
+    """The motion-graphics transitions, and which ones each theme reaches for."""
+    return {
+        "transitions": transition_names(),
+        "themes": {name: list(kinds) for name, kinds in THEME_TRANSITIONS.items()},
+        "default_enabled": settings.enable_transitions,
+        "every_nth_cut": settings.transition_every,
+        "seconds": settings.transition_seconds,
+    }
 
 
 @app.get("/api/v1/sfx")

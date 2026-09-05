@@ -50,6 +50,7 @@ SWITCHES = {
     "auto_beat_sync": None,
     "auto_reframe": "auto_reframe",
     "enable_sfx": "enable_sfx",
+    "enable_transitions": "enable_transitions",
     "auto_highlight": None,
     "review_plan": None,
     "export_preset": "export",
@@ -121,6 +122,7 @@ UI_TOGGLES = {
     "autoBeatSync": "setAutoBeatSync",
     "autoReframe": "setAutoReframe",
     "enableSfx": "setEnableSfx",
+    "enableTransitions": "setEnableTransitions",
     "autoHighlight": "setAutoHighlight",
     "reviewPlan": "setReviewPlan",
 }

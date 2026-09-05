@@ -44,6 +44,7 @@ from puter_video import (
 from ae_style import select_accent_hits
 from export_presets import DEFAULT_PRESET, ExportPreset, resolve_preset
 from micro_features import ReframeTrack, plan_reframe
+from motion_graphics import TRANSITIONS, pick_transition, transition_frames
 from sfx import SfxPlacement, build_sfx_track, plan_placements
 from sticker_art import draw_sticker
 from themes import Theme, resolve_theme
@@ -72,6 +73,7 @@ try:  # MoviePy 1.0.3 (pinned in requirements.txt)
         CompositeAudioClip,
         CompositeVideoClip,
         ImageClip,
+        ImageSequenceClip,
         VideoFileClip,
         concatenate_videoclips,
         vfx,
@@ -83,6 +85,7 @@ except ImportError:  # MoviePy >= 2.0
         CompositeAudioClip,
         CompositeVideoClip,
         ImageClip,
+        ImageSequenceClip,
         VideoFileClip,
         concatenate_videoclips,
         vfx,
@@ -578,12 +581,15 @@ class VideoRenderer:
         auto_reframe: bool = False,
         export: Optional[str] = None,
         enable_sfx: bool = True,
+        enable_transitions: bool = True,
     ) -> None:
         self.export: ExportPreset = resolve_preset(export or DEFAULT_PRESET)
         self.theme: Theme = resolve_theme(theme)
         self.analyses = list(analyses or [])
         self.auto_reframe = auto_reframe
         self.enable_sfx = enable_sfx
+        self.enable_transitions = enable_transitions
+        self._transitions_used = 0
         self._reframe_tracks: Dict[int, Optional[ReframeTrack]] = {}
         self.plan = plan
         self.clip_paths = [Path(path) for path in clip_paths]
@@ -751,12 +757,24 @@ class VideoRenderer:
             clip = self._build_segment(index, segment)
             animation = self._build_animation(index, segment)
 
+            replacing = animation is not None and segment.puter_animate.mode == "replace"
+            incoming = animation if replacing else (clip if clip is not None else animation)
+
             # The boundary is where this segment lands, which is whatever the
             # segments before it added up to - the planner's own timecodes
             # describe the source, not the cut.
-            self._note_boundary(segment, sum(_duration_of(c) for c in segment_clips))
+            elapsed = sum(_duration_of(piece) for piece in segment_clips)
 
-            if animation is not None and segment.puter_animate.mode == "replace":
+            bridge = self._build_transition(index, segment, segment_clips, incoming)
+            if bridge is not None:
+                segment_clips.append(bridge)
+                # The cut reads at the middle of a transition, not at its start,
+                # so that is where a shake or an impact belongs.
+                elapsed += _duration_of(bridge) / 2.0
+
+            self._note_boundary(segment, elapsed)
+
+            if replacing:
                 segment_clips.append(animation)
                 continue
             if clip is not None:
@@ -775,6 +793,51 @@ class VideoRenderer:
         base_path = self.workspace / "base.mp4"
         self._write_video(base, base_path, with_audio=True)
         return base_path
+
+    def _build_transition(
+        self, index: int, segment: TimelineSegment, built: List[Any], incoming: Any
+    ) -> Optional[Any]:
+        """A short motion-graphics bridge into this segment, if it earns one.
+
+        Rationed like the impact accents: a whip pan on every cut is the same
+        as a whip pan on none. The planner can name one explicitly, and a jump
+        cut or a zoom punch never gets one - those cut types *are* the effect,
+        and bridging them softens exactly what they exist to do.
+        """
+        if not self.enable_transitions or index == 0 or not built or incoming is None:
+            return None
+
+        named = (segment.transition or "").strip().lower()
+        if named and named not in TRANSITIONS:
+            self.warn(f"Unknown transition '{segment.transition}' - cut straight instead.")
+            named = ""
+        if not named:
+            if (segment.cut_type or "").lower() in ("jump_cut", "hard_cut", "zoom_punch"):
+                return None
+            if index % max(settings.transition_every, 1):
+                return None
+            named = pick_transition(self.theme.key, self._transitions_used)
+
+        seconds = max(settings.transition_seconds, 1.0 / max(self.fps, 1))
+        count = max(1, int(round(seconds * self.fps)))
+        outgoing = built[-1]
+        try:
+            last = outgoing.get_frame(max((_duration_of(outgoing) - 1.0 / self.fps), 0.0))
+            first = incoming.get_frame(0.0)
+            frames = transition_frames(
+                np.asarray(last, dtype=np.uint8), np.asarray(first, dtype=np.uint8),
+                named, count, seed=1000 + index,
+            )
+        except Exception as exc:
+            self.warn(f"Transition '{named}' could not be built: {exc}")
+            return None
+        if not frames:
+            return None
+
+        bridge = ImageSequenceClip(frames, fps=self.fps)
+        bridge = _with_duration(bridge, len(frames) / self.fps)
+        self._transitions_used += 1
+        return self._track(bridge)
 
     def _note_boundary(self, segment: TimelineSegment, at: float) -> None:
         """Record a segment hand-off so the SFX pass knows where to land.

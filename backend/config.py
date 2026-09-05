@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     sfx_audio_gain: float = 0.45
     enable_sfx: bool = True
 
+    # ---------------------------------------------------- motion graphics --
+    enable_transitions: bool = True
+    # A transition on every cut is the same as one on none, so they are
+    # rationed the way the impact accents are.
+    transition_every: int = 4
+    transition_seconds: float = 0.22
+
     # ------------------------------------------------------------- captions --
     whisper_model: str = "small"
     whisper_device: str = "cpu"

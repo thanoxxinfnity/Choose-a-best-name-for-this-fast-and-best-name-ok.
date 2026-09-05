@@ -34,6 +34,7 @@ data class EditorUiState(
     val autoBeatSync: Boolean = false,
     val autoReframe: Boolean = false,
     val enableSfx: Boolean = true,
+    val enableTransitions: Boolean = true,
     val autoHighlight: Boolean = true,
     val reviewPlan: Boolean = true,
     val exportPreset: String = "1080p60",
@@ -151,6 +152,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setAutoReframe(value: Boolean) = _state.update { it.copy(autoReframe = value) }
     fun setEnableSfx(value: Boolean) = _state.update { it.copy(enableSfx = value) }
+    fun setEnableTransitions(value: Boolean) = _state.update { it.copy(enableTransitions = value) }
     fun setAutoHighlight(value: Boolean) = _state.update { it.copy(autoHighlight = value) }
     fun setReviewPlan(value: Boolean) = _state.update { it.copy(reviewPlan = value) }
 
@@ -227,6 +229,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     autoBeatSync = current.autoBeatSync,
                     autoReframe = current.autoReframe,
                     enableSfx = current.enableSfx,
+                    enableTransitions = current.enableTransitions,
                     autoHighlight = current.autoHighlight,
                     reviewPlan = current.reviewPlan,
                     exportPreset = current.exportPreset,

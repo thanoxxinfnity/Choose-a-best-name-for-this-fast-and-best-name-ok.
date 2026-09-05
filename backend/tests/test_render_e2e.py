@@ -219,3 +219,80 @@ def test_sfx_can_be_switched_off(tmp_path, source_clips):
     )
     renderer.render(tmp_path / "nosfx.mp4")
     assert not (tmp_path / "ws4" / "assets" / "sfx_track.wav").exists()
+
+
+def test_motion_transitions_reach_the_rendered_video(tmp_path, source_clips):
+    """A transition that exists only in a unit test is a transition nobody sees.
+
+    The bridge frames are synthesised from the last frame of one shot and the
+    first of the next, so they are in neither source clip - if they survive
+    into the output, the splice worked.
+    """
+    from schemas import CaptionSpec, EditPlan, TimelineSegment
+
+    plan = EditPlan(
+        captions=CaptionSpec(enabled=False),
+        edit_timeline=[
+            TimelineSegment(start_time="0", end_time="1.5", cut_type="crossfade",
+                            source_index=0),
+            TimelineSegment(start_time="0", end_time="1.5", cut_type="crossfade",
+                            source_index=1, transition="whip_pan"),
+            TimelineSegment(start_time="2", end_time="3.5", cut_type="crossfade",
+                            source_index=0, transition="glitch_slice"),
+        ],
+    )
+    plan.audio.use_puter_tts = False
+
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws_mg",
+        puter=None, theme="ae_hype", export="720p60", enable_transitions=True,
+    )
+    output = renderer.render(tmp_path / "mg.mp4")
+
+    assert renderer._transitions_used == 2, renderer.warnings
+    assert not any("Transition" in warning for warning in renderer.warnings), renderer.warnings
+    info = probe_clip(output)
+    # Two 0.22s bridges on top of 4.5s of cut.
+    assert info["duration"] > 4.7, info
+
+
+def test_transitions_can_be_switched_off(tmp_path, source_clips):
+    from schemas import CaptionSpec, EditPlan, TimelineSegment
+
+    plan = EditPlan(
+        captions=CaptionSpec(enabled=False),
+        edit_timeline=[
+            TimelineSegment(start_time="0", end_time="1.5", cut_type="crossfade",
+                            source_index=0),
+            TimelineSegment(start_time="0", end_time="1.5", cut_type="crossfade",
+                            source_index=1, transition="whip_pan"),
+        ],
+    )
+    plan.audio.use_puter_tts = False
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws_nomg",
+        puter=None, theme="ae_hype", export="720p60", enable_transitions=False,
+    )
+    renderer.render(tmp_path / "nomg.mp4")
+    assert renderer._transitions_used == 0
+
+
+def test_a_jump_cut_is_never_softened_by_a_transition(tmp_path, source_clips):
+    """That cut type *is* the effect; bridging it undoes what it exists to do."""
+    from schemas import CaptionSpec, EditPlan, TimelineSegment
+
+    plan = EditPlan(
+        captions=CaptionSpec(enabled=False),
+        edit_timeline=[
+            TimelineSegment(start_time=str(i), end_time=str(i + 1),
+                            cut_type="jump_cut", source_index=0)
+            for i in range(5)
+        ],
+    )
+    plan.audio.use_puter_tts = False
+    renderer = VideoRenderer(
+        plan=plan, clip_paths=source_clips, workspace=tmp_path / "ws_jump",
+        puter=None, theme="ae_hype", export="720p60", enable_transitions=True,
+    )
+    renderer.render(tmp_path / "jump.mp4")
+    assert renderer._transitions_used == 0
