@@ -1366,15 +1366,23 @@ class VideoRenderer:
         base = _with_fps(base, self.fps)
         duration = base.duration or 0.0
 
+        # Everything from here to the caption pass used to run silently, which
+        # made a stall in it impossible to place: three renders died somewhere
+        # in this stretch and the last thing any of them reported was that the
+        # composite had started.
+        self.report(JobStage.RENDERING, 0.67, "Mixing the audio bed, voice and SFX")
         audio_clip, audio_duration = self._build_audio(base, voiceover, duration)
         if audio_duration > duration + 0.25:
             base = self._extend_to(base, audio_duration)
             duration = audio_duration
 
         layers = [base]
+        self.report(JobStage.RENDERING, 0.69, f"Laying out {len(stickers)} sticker(s)")
         layers.extend(self._sticker_layers(stickers, duration))
+        self.report(JobStage.RENDERING, 0.71, "Laying out the on-screen text")
         layers.extend(self._text_layers(duration))
 
+        self.report(JobStage.RENDERING, 0.73, "Exporting the audio for captioning")
         caption_source = self._export_audio_for_captions(audio_clip, voiceover)
         if self.plan.captions.enabled and settings.enable_captions and caption_source:
             self.report(JobStage.CAPTIONS, 0.74, "Transcribing word level captions with Faster-Whisper")
@@ -1384,6 +1392,8 @@ class VideoRenderer:
             else:
                 self.warn("No captions were produced (silent audio or Whisper unavailable).")
 
+        self.report(JobStage.RENDERING, 0.76,
+                    f"Compositing {len(layers)} layer(s)")
         composite = CompositeVideoClip(layers, size=(self.width, self.height))
         composite = _with_duration(composite, duration)
         composite = _with_fps(composite, self.fps)
