@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ae_style import apply_velocity_ramps, is_velocity_theme
+from ae_style import apply_velocity_ramps, is_velocity_theme, promote_hook
 from highlights import MIN_SEARCHABLE, find_highlights
 from plan_doctor import review as review_plan
 from config import settings
@@ -527,6 +527,15 @@ class JobManager:
 
             # ------------------------------------------ 2c. velocity ramps
             if is_velocity_theme(theme.key):
+                # A montage has no narrative order to protect, so the strongest
+                # shot can simply open it. A montage that saves its best moment
+                # for 0:12 is a montage nobody reaches 0:12 of.
+                promoted = promote_hook(plan, analyses)
+                if promoted is not None:
+                    self._update(
+                        job_id,
+                        message=f"Opened on the strongest shot (was segment {promoted + 1})",
+                    )
                 ramped = apply_velocity_ramps(plan)
                 if ramped:
                     self._update(

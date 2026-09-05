@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ae_style import (  # noqa: E402
     apply_velocity_ramps,
     is_velocity_theme,
+    promote_hook,
+    score_segments,
     select_accent_hits,
 )
 from schemas import EditPlan, TimelineSegment  # noqa: E402
@@ -113,3 +115,100 @@ def test_only_the_velocity_theme_gets_this_treatment():
     assert not is_velocity_theme("anime_edits")
     assert not is_velocity_theme("")
     assert not is_velocity_theme(None)
+
+
+# ---------------------------------------------------------------- the hook --
+
+class _Analysis:
+    """Just the motion curve - the only field the hook scorer reads."""
+
+    def __init__(self, curve):
+        self.motion_curve = curve
+
+
+def _curve(*bands):
+    """[(start, end, value), ...] -> a motion curve sampled every 0.5s."""
+    points = []
+    for start, end, value in bands:
+        at = start
+        while at < end:
+            points.append((round(at, 2), value))
+            at += 0.5
+    return points
+
+
+def test_the_strongest_shot_is_moved_to_the_front():
+    """In short form the opening frame is the whole decision."""
+    plan = _plan(5)
+    for index, segment in enumerate(plan.edit_timeline):
+        segment.start_time, segment.end_time = str(index), str(index + 1)
+    # Segment 3 (index 2) is where the picture is actually doing something.
+    analysis = _Analysis(_curve((0.0, 2.0, 0.1), (2.0, 3.0, 0.9), (3.0, 5.0, 0.1)))
+
+    promoted = promote_hook(plan, [analysis])
+    assert promoted == 2
+    assert plan.edit_timeline[0].start_seconds == 2.0
+
+
+def test_an_edit_that_already_opens_strong_is_left_alone():
+    plan = _plan(5)
+    for index, segment in enumerate(plan.edit_timeline):
+        segment.start_time, segment.end_time = str(index), str(index + 1)
+    analysis = _Analysis(_curve((0.0, 1.0, 0.9), (1.0, 5.0, 0.1)))
+
+    assert promote_hook(plan, [analysis]) is None
+    assert plan.edit_timeline[0].start_seconds == 0.0
+
+
+def test_a_marginal_winner_does_not_churn_the_edit():
+    """Swapping two near-identical shots is motion without improvement."""
+    plan = _plan(5)
+    for index, segment in enumerate(plan.edit_timeline):
+        segment.start_time, segment.end_time = str(index), str(index + 1)
+    analysis = _Analysis(_curve((0.0, 1.0, 0.50), (1.0, 3.0, 0.1), (3.0, 4.0, 0.55),
+                                (4.0, 5.0, 0.1)))
+
+    assert promote_hook(plan, [analysis]) is None
+
+
+def test_the_ending_is_never_stolen_to_open_with():
+    """That leaves the edit finishing on its weakest material."""
+    plan = _plan(4)
+    for index, segment in enumerate(plan.edit_timeline):
+        segment.start_time, segment.end_time = str(index), str(index + 1)
+    analysis = _Analysis(_curve((0.0, 3.0, 0.1), (3.0, 4.0, 0.95)))
+
+    assert promote_hook(plan, [analysis]) is None
+    assert plan.edit_timeline[-1].start_seconds == 3.0
+
+
+def test_a_promoted_opener_stops_being_a_transition():
+    plan = _plan(5)
+    for index, segment in enumerate(plan.edit_timeline):
+        segment.start_time, segment.end_time = str(index), str(index + 1)
+    plan.edit_timeline[2].cut_type = "crossfade"
+    analysis = _Analysis(_curve((0.0, 2.0, 0.1), (2.0, 3.0, 0.9), (3.0, 5.0, 0.1)))
+
+    assert promote_hook(plan, [analysis]) == 2
+    assert plan.edit_timeline[0].cut_type == "hard_cut"
+
+
+def test_without_an_analysis_nothing_is_reordered():
+    """Reordering on no evidence is guessing, and it costs the planner's intent."""
+    plan = _plan(5)
+    assert promote_hook(plan, []) is None
+    assert promote_hook(plan, [_Analysis([])]) is None
+
+
+def test_a_two_shot_edit_is_left_alone():
+    assert promote_hook(_plan(2), [_Analysis(_curve((0.0, 5.0, 0.5)))]) is None
+
+
+def test_segment_scores_come_from_the_window_each_one_uses():
+    plan = _plan(3)
+    for index, segment in enumerate(plan.edit_timeline):
+        segment.start_time, segment.end_time = str(index * 2), str(index * 2 + 2)
+    analysis = _Analysis(_curve((0.0, 2.0, 0.2), (2.0, 4.0, 0.8), (4.0, 6.0, 0.4)))
+
+    scores = score_segments(plan, [analysis])
+    assert scores[1] > scores[2] > scores[0]

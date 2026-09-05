@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Sequence
 
-from schemas import EditPlan
+from schemas import EditPlan, TimelineSegment
 
 logger = logging.getLogger(__name__)
 
@@ -115,3 +115,80 @@ def apply_velocity_ramps(
             segment.cut_type = "zoom_punch"
             changed += 1
     return changed
+
+
+# ---------------------------------------------------------------------------
+# The hook
+# ---------------------------------------------------------------------------
+
+
+def score_segments(
+    plan: EditPlan, analyses: Sequence[Any] = ()
+) -> List[float]:
+    """How strong each segment's footage is, from the measured motion curve.
+
+    This is the one judgement the planner cannot make from a text description:
+    it chose windows from a summary of the clip, but only the analysis knows
+    which of those windows the picture is actually doing something in.
+    """
+    curves: Dict[int, List] = {}
+    for index, analysis in enumerate(analyses or ()):
+        curve = list(getattr(analysis, "motion_curve", None) or [])
+        if curve:
+            curves[index] = curve
+
+    scores: List[float] = []
+    for segment in plan.edit_timeline:
+        curve = curves.get(segment.source_index or 0)
+        if not curve:
+            scores.append(0.0)
+            continue
+        low, high = segment.start_seconds, segment.end_seconds
+        inside = [value for at, value in curve if low <= at <= high]
+        scores.append(sum(inside) / len(inside) if inside else 0.0)
+    return scores
+
+
+def promote_hook(
+    plan: EditPlan,
+    analyses: Sequence[Any] = (),
+    margin: float = 1.35,
+) -> Optional[int]:
+    """Open on the strongest shot, not on whichever one happens to be first.
+
+    In short form the opening frame is the whole decision - a montage that
+    saves its best moment for 0:12 is a montage nobody reaches 0:12 of. A
+    montage has no narrative order to protect, so the strongest shot can
+    simply be moved to the front.
+
+    Only done when there is a clear winner: ``margin`` is how much better than
+    the current opener a shot has to be before reordering is worth it. Swapping
+    two near-identical shots churns the edit for nothing, and the planner may
+    have opened where it did on purpose.
+
+    Returns the index that was promoted, or ``None`` if nothing was.
+    """
+    timeline = plan.edit_timeline
+    if len(timeline) < 3:
+        return None
+
+    scores = score_segments(plan, analyses)
+    if not any(scores):
+        return None
+
+    best = max(range(len(scores)), key=lambda index: scores[index])
+    if best == 0:
+        return None
+    # The payoff is the other place a strong shot belongs; stealing the ending
+    # to open with leaves the edit finishing on its weakest material.
+    if best == len(timeline) - 1:
+        return None
+    if scores[best] < scores[0] * margin:
+        return None
+
+    segment = timeline.pop(best)
+    timeline.insert(0, segment)
+    # An opener is a hard statement, not a transition into one.
+    if (segment.cut_type or "").lower() in ("crossfade", "speed_ramp"):
+        segment.cut_type = "hard_cut"
+    return best
