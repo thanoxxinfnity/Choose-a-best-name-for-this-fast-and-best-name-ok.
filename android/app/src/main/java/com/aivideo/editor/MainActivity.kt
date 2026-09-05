@@ -422,6 +422,12 @@ fun EditorScreen(
                     onCheckedChange = viewModel::setAutoReframe,
                 )
                 ToggleRow(
+                    title = "Review the cut",
+                    subtitle = "Reads the timeline back, repairs it, and sends what is left to Kimi",
+                    checked = state.reviewPlan,
+                    onCheckedChange = viewModel::setReviewPlan,
+                )
+                ToggleRow(
                     title = "Find the moment",
                     subtitle = "Searches a long video or film and edits only its best window",
                     checked = state.autoHighlight,

@@ -33,9 +33,12 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-SKILL_VERSION = 1
+SKILL_VERSION = 2
 SKILL_FILENAME = "editing_skill.json"
 MAX_PLAYBOOKS = 24
+# A mistake has to recur before it is worth spending prompt on.
+HABIT_THRESHOLD = 3
+MAX_HABITS = 12
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +126,53 @@ CRAFT: Dict[str, List[str]] = {
 }
 
 
+# What a recurring finding means, said back to the model as a habit to break.
+# Keyed by the plan doctor's rule names; anything unmapped is skipped rather
+# than paraphrased badly.
+HABIT_LESSONS: Dict[str, str] = {
+    "metronome": "you keep writing shots that are all the same length - vary "
+                 "them deliberately, especially before the payoff",
+    "accent_inflation": "you keep marking almost every cut as a zoom punch - "
+                        "spend an accent every third or fourth cut, not on all of them",
+    "slow_open": "you keep opening on a long establishing shot - the promise "
+                 "has to land inside the first second",
+    "soft_open": "you keep opening on a crossfade - short form has no room to fade in",
+    "sticker_crowding": "you keep putting stickers on back-to-back shots - they "
+                        "need a shot between them to read",
+    "overlap": "you keep putting the text and the sticker in the same third of "
+               "the frame - they fight each other there",
+    "wordy_overlay": "you keep writing overlays longer than four words - only "
+                     "the first few get read",
+    "voice_overlap": "you keep starting a voice line before the previous one "
+                     "has finished - give each 2-6 seconds of its own",
+    "voice_on_the_hit": "you keep landing voice lines on cuts - they belong in "
+                        "the gaps between hits",
+    "voice_past_the_end": "you keep writing narration longer than the edit it "
+                          "sits in - count the words against the runtime",
+    "stub_ending": "you keep ending on a fragment of a shot - end on the "
+                   "strongest remaining moment, with room to land",
+    "past_the_end": "you keep referencing footage past the end of the clip - "
+                    "every timecode must exist in the uploads",
+    "missing_source": "you keep pointing at clips that were not uploaded",
+}
+
+
 # ---------------------------------------------------------------------------
 # Learned genre playbooks
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class Habit:
+    """A mistake this editor has been caught making, and how often."""
+
+    rule: str
+    count: int = 0
+    last_seen: float = 0.0
+
+    def to_line(self) -> str:
+        lesson = HABIT_LESSONS.get(self.rule, "")
+        return f"{lesson} (caught {self.count} times)" if lesson else ""
 
 
 @dataclass
@@ -166,6 +213,7 @@ class EditingSkill:
         section: list(rules) for section, rules in CRAFT.items()
     })
     playbooks: Dict[str, GenrePlaybook] = field(default_factory=dict)
+    habits: Dict[str, Habit] = field(default_factory=dict)
     updated_at: float = 0.0
 
     # ------------------------------------------------------------- prompting
@@ -180,7 +228,51 @@ class EditingSkill:
         if chosen:
             lines.append("\nMeasured genre playbooks (learned from real top performers):")
             lines.extend(f"  - {playbook.to_line()}" for playbook in chosen)
+
+        habits = self.recurring_habits()
+        if habits:
+            # The curated rules say what good looks like; these say which of
+            # them this editor has actually been failing, which is a sharper
+            # instruction than the rule on its own.
+            lines.append("\nHabits the review keeps catching in your timelines - break these:")
+            lines.extend(f"  - {habit.to_line()}" for habit in habits)
         return "\n".join(lines)
+
+    def recurring_habits(self, limit: int = 5) -> List[Habit]:
+        """The mistakes frequent enough to be worth naming."""
+        ranked = [
+            habit for habit in self.habits.values()
+            if habit.count >= HABIT_THRESHOLD and habit.to_line()
+        ]
+        ranked.sort(key=lambda habit: (habit.count, habit.last_seen), reverse=True)
+        return ranked[:limit]
+
+    def learn_from_review(self, rules: Sequence[str]) -> bool:
+        """Record what the plan doctor caught this time.
+
+        One bad timeline is noise - a model has an off draft like anyone. The
+        same finding three times is a habit, and only then does it earn a line
+        in the prompt, because a prompt that lists every stumble teaches
+        nothing and costs tokens on every render.
+        """
+        counted = 0
+        now = time.time()
+        for rule in rules:
+            if rule not in HABIT_LESSONS:
+                continue
+            habit = self.habits.get(rule) or Habit(rule=rule)
+            habit.count += 1
+            habit.last_seen = now
+            self.habits[rule] = habit
+            counted += 1
+        if not counted:
+            return False
+        if len(self.habits) > MAX_HABITS:
+            ranked = sorted(self.habits.values(),
+                            key=lambda habit: (habit.count, habit.last_seen), reverse=True)
+            self.habits = {habit.rule: habit for habit in ranked[:MAX_HABITS]}
+        self.updated_at = now
+        return True
 
     def _relevant_playbooks(self, niche: str, limit: int) -> List[GenrePlaybook]:
         if not self.playbooks:
@@ -244,6 +336,7 @@ class EditingSkill:
             "version": self.version,
             "craft": self.craft,
             "playbooks": {key: asdict(value) for key, value in self.playbooks.items()},
+            "habits": {key: asdict(value) for key, value in self.habits.items()},
             "updated_at": self.updated_at,
         }
 
@@ -252,6 +345,9 @@ class EditingSkill:
         playbooks = {
             key: GenrePlaybook(**value)
             for key, value in (data.get("playbooks") or {}).items()
+        }
+        habits = {
+            key: Habit(**value) for key, value in (data.get("habits") or {}).items()
         }
         craft = data.get("craft") or {}
         # A stored skill from an older version keeps any curated section it is
@@ -262,6 +358,7 @@ class EditingSkill:
             version=int(data.get("version", SKILL_VERSION)),
             craft=merged,
             playbooks=playbooks,
+            habits=habits,
             updated_at=float(data.get("updated_at", 0.0)),
         )
 
@@ -346,6 +443,15 @@ def learn_from_research(niche: str, report: Any, style: Dict[str, Any]) -> bool:
     """Public hook: fold a trend report into the persistent skill."""
     skill = load_skill()
     if skill.learn_from_research(niche, report, style):
+        save_skill(skill)
+        return True
+    return False
+
+
+def learn_from_review(rules: Sequence[str]) -> bool:
+    """Public hook: record what the plan doctor caught, so it stops recurring."""
+    skill = load_skill()
+    if skill.learn_from_review(rules):
         save_skill(skill)
         return True
     return False

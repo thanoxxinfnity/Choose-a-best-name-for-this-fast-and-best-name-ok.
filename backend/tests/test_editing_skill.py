@@ -201,3 +201,82 @@ def test_playbook_line_is_readable():
         suggested_cuts=14, hooks=["emoji in the title"], keywords=["gojo"], sampled=17,
     ).to_line()
     assert "19s" in line and "0.8-1.8s" in line and "14 cuts" in line and "17 videos" in line
+
+
+# ------------------------------------------- learning from its own review ---
+
+def test_one_bad_draft_teaches_nothing():
+    """A model has an off draft like anyone; naming it as a habit is noise."""
+    from editing_skill import EditingSkill
+
+    skill = EditingSkill()
+    skill.learn_from_review(["metronome"])
+    assert skill.recurring_habits() == []
+    assert "Habits the review" not in skill.to_system_block()
+
+
+def test_the_same_mistake_three_times_becomes_a_habit():
+    from editing_skill import EditingSkill
+
+    skill = EditingSkill()
+    for _ in range(3):
+        skill.learn_from_review(["metronome"])
+
+    habits = skill.recurring_habits()
+    assert [habit.rule for habit in habits] == ["metronome"]
+    block = skill.to_system_block()
+    assert "Habits the review keeps catching" in block
+    assert "same length" in block
+
+
+def test_habits_are_ranked_by_how_often_they_recur():
+    from editing_skill import EditingSkill
+
+    skill = EditingSkill()
+    for _ in range(3):
+        skill.learn_from_review(["wordy_overlay"])
+    for _ in range(6):
+        skill.learn_from_review(["metronome"])
+
+    assert [habit.rule for habit in skill.recurring_habits()][0] == "metronome"
+
+
+def test_a_rule_with_no_lesson_is_skipped_rather_than_paraphrased_badly():
+    from editing_skill import EditingSkill
+
+    skill = EditingSkill()
+    assert skill.learn_from_review(["some_rule_that_does_not_exist"]) is False
+    assert skill.habits == {}
+
+
+def test_habits_survive_being_saved_and_loaded():
+    from editing_skill import EditingSkill
+
+    skill = EditingSkill()
+    for _ in range(4):
+        skill.learn_from_review(["voice_on_the_hit"])
+
+    restored = EditingSkill.from_dict(skill.to_dict())
+    assert restored.habits["voice_on_the_hit"].count == 4
+    assert [h.rule for h in restored.recurring_habits()] == ["voice_on_the_hit"]
+
+
+def test_a_skill_stored_before_habits_existed_still_loads():
+    """Upgrading the code must not make an existing skill file unreadable."""
+    from editing_skill import CRAFT, EditingSkill
+
+    legacy = {"version": 1, "craft": {"Pacing": ["something"]}, "playbooks": {},
+              "updated_at": 0.0}
+    restored = EditingSkill.from_dict(legacy)
+    assert restored.habits == {}
+    # And the curated sections it never knew about are still there.
+    assert set(CRAFT) <= set(restored.craft)
+
+
+def test_the_habit_list_is_bounded():
+    from editing_skill import HABIT_LESSONS, MAX_HABITS, EditingSkill
+
+    skill = EditingSkill()
+    for rule in HABIT_LESSONS:
+        skill.learn_from_review([rule])
+    assert len(skill.habits) <= MAX_HABITS

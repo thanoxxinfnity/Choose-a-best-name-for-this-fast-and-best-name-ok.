@@ -397,6 +397,68 @@ class KimiOrchestrator:
             return build_fallback_plan(prompt, clips, youtube_reference, target, analyses), warnings
         return plan, warnings
 
+    def revise_plan(
+        self,
+        plan: EditPlan,
+        review_block: str,
+        clips: Sequence[ClipInfo],
+        max_stickers: int = 4,
+        max_inpaints: int = 2,
+        max_animations: int = 0,
+    ) -> tuple[Optional[EditPlan], List[str]]:
+        """Hand the model its own timeline back with the review, for one retry.
+
+        A first draft that has been read and criticised is a different thing
+        from a first draft, and this is the only stage where the model sees a
+        consequence of what it wrote. Deliberately one round: a second opinion
+        is worth waiting for, a third is the model negotiating with itself.
+
+        Returns ``(plan, warnings)`` with ``plan`` ``None`` when the revision
+        could not be obtained or was not an improvement - the caller keeps the
+        repaired original, so a failed retry costs time and nothing else.
+        """
+        warnings: List[str] = []
+        if not self.is_configured or not review_block.strip():
+            return None, warnings
+
+        current = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False)
+        message = (
+            "This is the timeline you produced:\n\n"
+            f"{current}\n\n"
+            f"{review_block}\n\n"
+            "Re-emit the COMPLETE timeline JSON in the same schema with those "
+            "problems fixed. Change only what the review asks for - keep every "
+            "other creative decision exactly as it is. Output JSON only."
+        )
+
+        deadline = time.monotonic() + settings.nim_revise_budget_seconds
+        try:
+            raw = self._chat(self.model, message, deadline=deadline,
+                             system_prompt=SYSTEM_PROMPT)
+        except NimRateLimited as exc:
+            warnings.append(f"Second-pass review skipped: {exc}")
+            return None, warnings
+        except OrchestratorError as exc:
+            logger.warning("revision pass failed: %s", exc)
+            warnings.append("Second-pass review did not come back - kept the repaired timeline.")
+            return None, warnings
+
+        try:
+            revised = EditPlan.model_validate(extract_json(raw))
+        except Exception as exc:
+            logger.warning("revision returned an unusable timeline: %s", exc)
+            warnings.append("The revised timeline was unusable - kept the repaired one.")
+            return None, warnings
+
+        revised, sanitise_warnings = sanitise_plan(
+            revised, clips, max_stickers, max_inpaints, max_animations
+        )
+        warnings.extend(sanitise_warnings)
+        if not revised.edit_timeline:
+            warnings.append("The revised timeline came back empty - kept the repaired one.")
+            return None, warnings
+        return revised, warnings
+
     # ------------------------------------------------------------- internals
     def _model_candidates(self) -> List[str]:
         candidates = [self.model]

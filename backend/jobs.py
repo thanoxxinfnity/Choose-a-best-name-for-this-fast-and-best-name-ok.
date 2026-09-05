@@ -23,10 +23,11 @@ from typing import Dict, List, Optional
 
 from ae_style import apply_velocity_ramps, is_velocity_theme
 from highlights import MIN_SEARCHABLE, find_highlights
+from plan_doctor import review as review_plan
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from export_presets import check_source_headroom, describe_cost, resolve_preset
-from editing_skill import learn_from_research
+from editing_skill import learn_from_research, learn_from_review
 from micro_features import apply_micro_features
 from style_library import remember_plan
 from trend_research import derive_style, research_trends
@@ -81,6 +82,8 @@ class JobRequest:
     enable_sfx: bool = True
     # Long source in, short clip out: find the moment before editing it.
     auto_highlight: bool = True
+    # Read the timeline back and repair it before rendering it.
+    review_plan: bool = True
     export_preset: str = "1080p60"
     # Research the niche on YouTube before planning, and learn by example.
     research_trends: bool = False
@@ -457,6 +460,57 @@ class JobManager:
                 plan.intro.active = False
             if not request.enable_outro:
                 plan.outro.active = False
+
+            # ------------------------------------------- 2a. read it back
+            # Nothing before this point ever looked at the timeline; every
+            # stage wrote. The examination is mostly counting - shot lengths,
+            # accents, whether a voice line lands on a hit - which is exactly
+            # what a language model is bad at and a measurement is good at.
+            if request.review_plan:
+                clip_durations = [max(clip.duration, 0.0) for clip in status.clips]
+                plan, diagnosis = review_plan(plan, clip_durations, theme)
+                if diagnosis.findings:
+                    self._update(
+                        job_id,
+                        message=(
+                            f"Reviewed the cut: {len(diagnosis.fixed)} problem(s) repaired, "
+                            f"{len(diagnosis.outstanding)} left to the model"
+                        ),
+                    )
+                    warnings.extend(diagnosis.to_notes())
+                    # Remember what was caught. One bad draft is noise; the same
+                    # finding three renders running is a habit worth naming back
+                    # to the model in its own system prompt.
+                    learn_from_review([finding.rule for finding in diagnosis.findings])
+
+                # Whatever could not be repaired mechanically needs a creative
+                # decision, so it goes back to the model - once. A retry that
+                # fails costs time and nothing else: the repaired plan stands.
+                block = diagnosis.to_prompt_block()
+                if block and settings.enable_plan_review and request.plan_override is None:
+                    self._update(job_id, message="Sending the review back to Kimi for one revision")
+                    revised, revise_warnings = KimiOrchestrator(api_key=nim_key).revise_plan(
+                        plan, block, status.clips,
+                        max_stickers=request.max_stickers,
+                        max_inpaints=request.max_inpaints,
+                        max_animations=request.max_animations if request.enable_animation else 0,
+                    )
+                    warnings.extend(revise_warnings)
+                    if revised is not None:
+                        # The revision is a draft too, so it is examined on the
+                        # same terms; a rewrite that made things worse is not an
+                        # improvement just because the model produced it.
+                        revised, after = review_plan(revised, clip_durations, theme)
+                        if len(after.outstanding) < len(diagnosis.outstanding):
+                            plan = revised
+                            self._update(
+                                job_id,
+                                message=f"Kimi's revision fixed {len(diagnosis.outstanding) - len(after.outstanding)} more",
+                            )
+                        else:
+                            warnings.append(
+                                "Kimi's revision did not improve on the repaired timeline - kept the repair."
+                            )
 
             # ------------------------------------------ 2b. micro-features
             # The velocity grammar is built on cutting *on* the beat, not near

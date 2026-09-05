@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # request timeout x 2 model candidates is a 30 minute worst case and the
     # Android client just sees "planning" forever.
     nim_plan_budget_seconds: int = 240
+    # The second pass has a draft to work from, so it is much shorter than
+    # the first - and it is optional, so it must never dominate the job.
+    nim_revise_budget_seconds: int = 120
+    enable_plan_review: bool = True
     # Vision pass: what is actually in the footage (subjects, style, mood).
     nim_vision_model: str = "meta/llama-3.2-90b-vision-instruct"
     nim_vision_fallback_model: str = "meta/llama-3.2-11b-vision-instruct"

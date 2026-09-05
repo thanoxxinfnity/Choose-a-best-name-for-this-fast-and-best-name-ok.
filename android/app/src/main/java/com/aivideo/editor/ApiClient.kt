@@ -267,6 +267,7 @@ object ApiClient {
         autoReframe: Boolean = false,
         enableSfx: Boolean = true,
         autoHighlight: Boolean = true,
+        reviewPlan: Boolean = true,
         exportPreset: String = "1080p60",
         onProgress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result<JobCreatedDto> = runCatching {
@@ -295,6 +296,7 @@ object ApiClient {
             addFormDataPart("auto_reframe", autoReframe.toString())
             addFormDataPart("enable_sfx", enableSfx.toString())
             addFormDataPart("auto_highlight", autoHighlight.toString())
+            addFormDataPart("review_plan", reviewPlan.toString())
             addFormDataPart("export_preset", exportPreset)
 
             clips.forEach { clip ->

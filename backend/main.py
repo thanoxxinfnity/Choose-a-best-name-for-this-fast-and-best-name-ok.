@@ -221,6 +221,7 @@ async def create_render_job(
     auto_reframe: bool = Form(default=False),
     enable_sfx: bool = Form(default=True),
     auto_highlight: bool = Form(default=True),
+    review_plan: bool = Form(default=True),
     export_preset: str = Form(default="1080p60"),
     research_trends_flag: bool = Form(default=False, alias="research_trends"),
     trend_query: str = Form(default=""),
@@ -291,6 +292,7 @@ async def create_render_job(
             auto_reframe=auto_reframe,
             enable_sfx=enable_sfx,
             auto_highlight=auto_highlight,
+            review_plan=review_plan,
             export_preset=export_preset,
             research_trends=research_trends_flag,
             trend_query=trend_query,
@@ -699,6 +701,12 @@ def get_skill(niche: str = ""):
                 "observations": playbook.observations,
             }
             for playbook in skill.playbooks.values()
+        ],
+        "habits": [
+            {"rule": habit.rule, "count": habit.count,
+             "lesson": habit.to_line(), "last_seen": habit.last_seen}
+            for habit in sorted(skill.habits.values(),
+                                key=lambda item: item.count, reverse=True)
         ],
         "system_block": skill.to_system_block(niche=niche),
     }

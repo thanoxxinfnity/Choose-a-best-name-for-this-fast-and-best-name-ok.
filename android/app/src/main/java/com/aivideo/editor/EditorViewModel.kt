@@ -35,6 +35,7 @@ data class EditorUiState(
     val autoReframe: Boolean = false,
     val enableSfx: Boolean = true,
     val autoHighlight: Boolean = true,
+    val reviewPlan: Boolean = true,
     val exportPreset: String = "1080p60",
     val exportPresets: List<ExportPresetDto> = emptyList(),
     val themes: List<ThemeDto> = emptyList(),
@@ -151,6 +152,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun setAutoReframe(value: Boolean) = _state.update { it.copy(autoReframe = value) }
     fun setEnableSfx(value: Boolean) = _state.update { it.copy(enableSfx = value) }
     fun setAutoHighlight(value: Boolean) = _state.update { it.copy(autoHighlight = value) }
+    fun setReviewPlan(value: Boolean) = _state.update { it.copy(reviewPlan = value) }
 
     fun setExportPreset(value: String) {
         SecureStore.write(context, SecureStore.KEY_EXPORT_PRESET, value)
@@ -226,6 +228,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     autoReframe = current.autoReframe,
                     enableSfx = current.enableSfx,
                     autoHighlight = current.autoHighlight,
+                    reviewPlan = current.reviewPlan,
                     exportPreset = current.exportPreset,
                 ) { uploaded, total ->
                     _state.update { it.copy(uploadedBytes = uploaded, totalBytes = total) }
