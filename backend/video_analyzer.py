@@ -111,6 +111,9 @@ class VideoAnalysis:
     summary: str = ""
     vision_model: str = ""
     vision_error: str = ""
+    # False when the description came from the fallback model. Its invented
+    # nouns must not reach the stickers and the on-screen text.
+    vision_trusted: bool = True
 
     def to_prompt_block(self) -> str:
         """Everything Kimi needs to plan an edit that matches the footage."""
@@ -151,6 +154,7 @@ class VideoAnalysis:
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         data["motion_curve"] = [[round(t, 2), round(v, 4)] for t, v in self.motion_curve]
+        data["vision_trusted"] = self.vision_trusted
         data["silence_spans"] = [[round(a, 2), round(b, 2)] for a, b in self.silence_spans]
         return data
 
@@ -558,12 +562,45 @@ def analyse_video(
         analysis.text_ideas = [str(item) for item in (payload.get("text_ideas") or [])][:6]
         analysis.summary = str(payload.get("summary") or "").strip()
         analysis.vision_model = str(payload.get("_model") or "")
+
+        # A fallback answer is not a weaker answer, it is an unchecked one.
+        # Asked to describe an anime edit, the small model reported a gaming
+        # screen recording once and a city vlog the next time, both with
+        # complete confidence - and the invented nouns went straight into the
+        # stickers and the on-screen text, which is how an anime edit ends up
+        # captioned LEVEL UP. Measured facts survive; invented ones do not.
+        analysis.vision_trusted = analysis.vision_model == settings.nim_vision_model
+        if not analysis.vision_trusted:
+            _discard_invented_detail(analysis)
     except Exception as exc:
         logger.warning("vision analysis failed for %s: %s", path.name, exc)
         analysis.vision_error = str(exc)[:300]
         _apply_local_fallback(analysis)
 
     return analysis
+
+
+def _discard_invented_detail(analysis: VideoAnalysis) -> None:
+    """Keep what was measured, drop what was described.
+
+    Energy and mood are cheap and hard to get badly wrong from a contact
+    sheet; subjects, recognisable names, sticker prompts and caption copy are
+    exactly what a model confabulates, and each one becomes something the
+    viewer sees. Without them the planner writes from the user's prompt and
+    the measured signal, which fails far more gracefully than confident
+    nonsense does.
+    """
+    analysis.subjects = []
+    analysis.sticker_ideas = []
+    analysis.text_ideas = []
+    analysis.recognisable = ""
+    analysis.summary = ""
+    analysis.content_type = "unknown"
+    analysis.vision_error = (
+        f"the primary vision model did not answer; '{analysis.vision_model}' "
+        f"stood in and its description of the footage is not reliable enough "
+        f"to name subjects or write on-screen text from"
+    )
 
 
 def _apply_local_fallback(analysis: VideoAnalysis) -> None:
