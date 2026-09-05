@@ -197,14 +197,24 @@ class PuterVideoClient(PuterClient):
         )
 
     def _home(self) -> str:
-        """The account's own directory name, which is its username."""
+        """The account's own directory name, which is its username.
+
+        Checked before the request, not after: without a key this used to
+        surface as a raw 401 from whoami instead of the same clear refusal
+        every other call gives.
+        """
+        if not self.is_configured:
+            raise PuterError("No Puter.js API key - video generation is unavailable.")
         if self._home_cache is None:
             response = requests.get(
                 f"{self.base_url}/whoami",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=30,
             )
-            response.raise_for_status()
+            if response.status_code != 200:
+                raise PuterError(
+                    f"Puter rejected the Puter.js API key: HTTP {response.status_code}"
+                )
             self._home_cache = str(response.json().get("username") or "").strip()
             if not self._home_cache:
                 raise PuterError("Puter did not report a username to write the video under.")

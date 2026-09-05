@@ -14,6 +14,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from config import settings  # noqa: E402
 from puter_integration import ffmpeg_binary  # noqa: E402
 from puter_video import (  # noqa: E402
     IMAGE_TO_VIDEO_MODEL,
@@ -265,8 +266,10 @@ def test_shake_intensity_scales_with_width():
 # ---------------------------------------------------------------- video / i2v --
 
 def test_video_models_match_the_spec():
-    assert TEXT_TO_VIDEO_MODEL == "wan-ai/wan2.2-t2v-a14b"
-    assert IMAGE_TO_VIDEO_MODEL == "wan-ai/wan2.2-i2v-a14b"
+    # The wan2.2 ids this once named are not served on this driver at all;
+    # the pair that exists is openai-video-generation, and sora-2 is its model.
+    assert TEXT_TO_VIDEO_MODEL == settings.puter_t2v_model
+    assert IMAGE_TO_VIDEO_MODEL == settings.puter_i2v_model
 
 
 def test_job_handle_detection():
