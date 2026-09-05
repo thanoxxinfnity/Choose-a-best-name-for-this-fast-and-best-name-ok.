@@ -286,9 +286,13 @@ def pick_transition(theme: str, index: int = 0) -> str:
 class TitleStyle:
     color: Tuple[int, int, int] = (255, 255, 255)
     face_shade: float = 1.0
-    extrude_color: Tuple[int, int, int] = (24, 24, 32)
+    # None means "the face colour, unlit". A fixed near-black side wall
+    # disappears against a dark shot, which is the same as having no
+    # extrusion at all; deriving it from the face keeps the letter reading as
+    # one solid object whatever it is sitting on.
+    extrude_color: Optional[Tuple[int, int, int]] = None
     outline: Tuple[int, int, int] = (0, 0, 0)
-    depth: float = 0.16          # extrusion, as a fraction of the cap height
+    depth: float = 0.22          # extrusion, as a fraction of the cap height
     yaw: float = 26.0            # degrees the type is turned at rest
     overshoot: float = 1.14      # how far past its size the punch-in goes
 
@@ -351,10 +355,16 @@ def extruded_title(
     stamp = Image.new("RGBA", (text_width + pad * 2, text_height + pad * 2), (0, 0, 0, 0))
     draw = ImageDraw.Draw(stamp)
 
+    wall = style.extrude_color or tuple(
+        max(18, int(channel * 0.42)) for channel in style.color
+    )
+
     # Back to front, so nearer slices cover the ones behind them.
     for layer in range(depth_px, 0, -1):
-        fade = 0.30 + 0.55 * (1.0 - layer / depth_px)
-        shade = tuple(int(channel * fade) for channel in style.extrude_color)
+        # Nearer slices catch more light, which is what gives the wall its
+        # curve instead of a flat slab of one colour.
+        fade = 0.55 + 0.45 * (1.0 - layer / depth_px)
+        shade = tuple(int(channel * fade) for channel in wall)
         draw.text((pad + step_x * layer, pad - step_y * layer), letters,
                   font=font, fill=(*shade, 255))
 

@@ -22,6 +22,8 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from motion_graphics import particle_burst
+
 Frame = np.ndarray
 
 
@@ -329,15 +331,22 @@ def build_effect_chain(
     flash_decay: float = 0.13,
     drift_zoom: float = 0.0,
     duration: float = 0.0,
+    spark_hits: Sequence[float] = (),
+    spark_amount: float = 0.0,
+    spark_colour: Tuple[int, int, int] = (255, 236, 190),
+    spark_life: float = 0.45,
 ) -> Optional[Callable[[Frame, float], Frame]]:
     """Compose the per-frame effects a theme asks for into one callable."""
     wants_flash = flash_strength > 0 and bool(flash_hits)
     wants_drift = drift_zoom > 0 and duration > 0
+    wants_sparks = spark_amount > 0 and bool(spark_hits)
     if (shake is None and not grade and vignette_strength <= 0 and bloom <= 0
-            and pop <= 0 and base_rgb_split <= 0 and not wants_flash and not wants_drift):
+            and pop <= 0 and base_rgb_split <= 0 and not wants_flash
+            and not wants_drift and not wants_sparks):
         return None
     seed = 0.0
     hits = tuple(flash_hits or ())
+    sparks = tuple(sorted(spark_hits or ()))
 
     def effect(frame: Frame, t: float) -> Frame:
         out = frame
@@ -367,6 +376,19 @@ def build_effect_chain(
             out = glow_bloom(out, bloom)
         if vignette_strength > 0:
             out = vignette(out, vignette_strength)
+        # Sparks are lit objects in the shot, so they are added before the
+        # flash blows the frame out - otherwise they read as dirt on the lens
+        # that the flash cannot reach.
+        if wants_sparks:
+            for hit in sparks:
+                age = t - hit
+                if 0.0 <= age <= spark_life:
+                    out = particle_burst(
+                        out, age, life=spark_life,
+                        count=max(6, int(34 * spark_amount)),
+                        seed=int(hit * 1000) & 0xFFFF, colour=spark_colour,
+                    )
+                    break
         # The flash goes last so it burns the graded picture, not the raw one.
         if wants_flash:
             burn = flash_envelope(hits, t, flash_decay) * flash_strength

@@ -44,7 +44,14 @@ from puter_video import (
 from ae_style import select_accent_hits
 from export_presets import DEFAULT_PRESET, ExportPreset, resolve_preset
 from micro_features import ReframeTrack, plan_reframe
-from motion_graphics import TRANSITIONS, pick_transition, transition_frames
+from motion_graphics import (
+    TRANSITIONS,
+    TitleStyle,
+    extruded_title,
+    particle_burst,
+    pick_transition,
+    transition_frames,
+)
 from sfx import SfxPlacement, build_sfx_track, plan_placements
 from sticker_art import draw_sticker
 from themes import Theme, resolve_theme
@@ -467,6 +474,37 @@ def _wrap_text(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str
             current = word
     lines.append(current)
     return lines
+
+
+def _hex_to_rgb(value: str, fallback: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[int, int, int]:
+    """Parse '#RRGGBB' (or 'RGB'), falling back rather than failing a render."""
+    text = (value or "").strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(channel * 2 for channel in text)
+    if len(text) != 6:
+        return fallback
+    try:
+        return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+    except ValueError:
+        return fallback
+
+
+def _clip_from_rgba_frames(frames: Sequence[np.ndarray], fps: float):
+    """A clip from a sequence of RGBA frames, alpha animated along with them.
+
+    Built by concatenating one masked still per frame rather than through
+    ImageSequenceClip: that class inspects ``shape[2]`` of its first frame, so
+    it cannot take the two-dimensional arrays a mask sequence is made of, and
+    without an animated mask the type arrives as an opaque rectangle with the
+    artwork inside it.
+    """
+    if not frames:
+        raise ValueError("no frames to build a clip from")
+    step = 1.0 / max(fps, 1)
+    stills = [_with_duration(_clip_from_rgba(frame), step) for frame in frames]
+    if len(stills) == 1:
+        return _with_fps(stills[0], fps)
+    return _with_fps(concatenate_videoclips(stills, method="compose"), fps)
 
 
 def _clip_from_rgba(array: np.ndarray):
@@ -1419,6 +1457,10 @@ class VideoRenderer:
             flash_decay=self.theme.flash_decay,
             drift_zoom=self.theme.drift_zoom,
             duration=duration,
+            # Sparks go on the accented hits only - the same ones that flash.
+            spark_hits=flash_hits if self.theme.sparks else [],
+            spark_amount=self.theme.sparks,
+            spark_colour=self.theme.spark_colour,
         )
         if effect is None:
             return clip
@@ -1427,6 +1469,8 @@ class VideoRenderer:
             detail.append(f"{self.theme.shake_kind} shake on {len(hits)} hits")
         if flash_hits:
             detail.append(f"{len(flash_hits)} impact flashes")
+        if self.theme.sparks and flash_hits:
+            detail.append("sparks")
         self.report(
             JobStage.RENDERING, 0.78,
             f"Applying '{self.theme.name}' look"
@@ -1613,6 +1657,14 @@ class VideoRenderer:
         return layers
 
     def _text_clip(self, overlay: TextOverlay, start: float, duration: float):
+        if "3d" in (overlay.style or "").lower():
+            clip = self._kinetic_text_clip(overlay, duration)
+            if clip is not None:
+                clip = _with_start(clip, start)
+                return self._animate(clip, overlay.animation, overlay.position,
+                                     duration, (clip.w, clip.h))
+            # Fall through to the flat renderer rather than dropping the text.
+
         try:
             array = render_text_rgba(
                 overlay.text.upper(),
@@ -1631,6 +1683,38 @@ class VideoRenderer:
         clip = _with_fps(clip, self.fps)
         return self._animate(clip, overlay.animation, overlay.position, duration,
                              (array.shape[1], array.shape[0]))
+
+    def _kinetic_text_clip(self, overlay: TextOverlay, duration: float):
+        """Type with a real extrusion that punches in and then holds.
+
+        Only the arrival is animated. Rendering all of it per frame would cost
+        a full type layout on every frame of a three second hold to show the
+        same picture, so the settled frame is held instead.
+        """
+        arrival = min(0.45, max(duration * 0.5, 1.0 / max(self.fps, 1)))
+        count = max(2, int(round(arrival * self.fps)))
+        box = (int(self.width * 0.9), int(self.height * 0.30))
+        colour = _hex_to_rgb(overlay.color or "#FFFFFF")
+
+        try:
+            frames = [
+                extruded_title(overlay.text.upper(), box, (index + 1) / count,
+                               style=TitleStyle(color=colour),
+                               font_size=int(self.height * 0.056))
+                for index in range(count)
+            ]
+        except Exception as exc:
+            self.warn(f"3D text '{overlay.text[:30]}' fell back to flat: {exc}")
+            return None
+
+        punch = _clip_from_rgba_frames(frames, self.fps)
+        hold_for = max(duration - count / self.fps, 0.0)
+        if hold_for <= 1.0 / max(self.fps, 1):
+            return _with_fps(_with_duration(punch, duration), self.fps)
+
+        hold = _with_duration(_clip_from_rgba(frames[-1]), hold_for)
+        joined = concatenate_videoclips([punch, _with_fps(hold, self.fps)], method="compose")
+        return _with_fps(_with_duration(joined, duration), self.fps)
 
     def _caption_layers(self, words: List[Any], duration: float) -> List[Any]:
         """Word-level captions, a phrase at a time with the spoken word lit."""

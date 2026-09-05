@@ -39,6 +39,9 @@ class Theme:
     flash_decay: float = 0.13
     # A slow push across the length of every shot.
     drift_zoom: float = 0.0
+    # Sparks thrown from the centre on an accented hit.
+    sparks: float = 0.0            # 0 = off; scales how many
+    spark_colour: Tuple[int, int, int] = (255, 236, 190)
 
     # Pacing hints handed to Kimi and to the deterministic editor.
     segment_seconds: Tuple[float, float] = (2.0, 4.0)
@@ -105,6 +108,7 @@ THEMES: Dict[str, Theme] = {
         shake_decay=0.18,
         shake_motion_blur=True,
         shake_on="impacts",
+        sparks=0.75,
         segment_seconds=(0.9, 2.2),
         default_cut="jump_cut",
         speed_ramp=1.15,
@@ -188,6 +192,8 @@ THEMES: Dict[str, Theme] = {
         flash_strength=0.34,
         flash_decay=0.11,
         drift_zoom=0.035,
+        sparks=1.0,
+        spark_colour=(214, 176, 255),
         segment_seconds=(0.7, 1.8),
         default_cut="zoom_punch",
         speed_ramp=1.2,

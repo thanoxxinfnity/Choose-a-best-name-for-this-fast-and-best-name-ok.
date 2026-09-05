@@ -236,3 +236,98 @@ def test_the_same_hit_sparks_the_same_way():
         mg.particle_burst(base.copy(), 0.2, seed=5),
         mg.particle_burst(base.copy(), 0.2, seed=5),
     )
+
+
+# ------------------------------------------- wired into the effect chain ----
+
+def test_sparks_reach_the_theme_effect_chain():
+    """Building a primitive nothing calls is the same as not building it."""
+    from vfx import build_effect_chain
+
+    frame = _shot((20, 20, 20))
+    effect = build_effect_chain(spark_hits=[1.0], spark_amount=1.0)
+    assert effect is not None
+    assert effect(frame.copy(), 1.05).mean() > frame.mean()
+    # Well away from the hit, the frame is untouched.
+    assert np.array_equal(effect(frame.copy(), 5.0), frame)
+
+
+def test_a_theme_with_no_sparks_builds_no_spark_pass():
+    from vfx import build_effect_chain
+
+    assert build_effect_chain(spark_hits=[1.0], spark_amount=0.0) is None
+    assert build_effect_chain(spark_hits=[], spark_amount=1.0) is None
+
+
+def test_sparks_are_added_under_the_flash_not_over_it():
+    """Sparks are objects in the shot; a flash has to be able to blow them out."""
+    from vfx import build_effect_chain
+
+    frame = _shot((20, 20, 20))
+    both = build_effect_chain(spark_hits=[1.0], spark_amount=1.0,
+                              flash_hits=[1.0], flash_strength=0.9)
+    lit = both(frame.copy(), 1.0)
+    # The flash dominates: nearly the whole frame lifts, not just the sparks.
+    assert float((lit > 150).mean()) > 0.5
+
+
+def test_the_ae_theme_asks_for_sparks_and_the_calm_ones_do_not():
+    from themes import THEMES
+
+    assert THEMES["ae_hype"].sparks > 0
+    assert THEMES["anime_edits"].sparks > 0
+    assert THEMES["normal"].sparks == 0
+    assert THEMES["haunted"].sparks == 0
+
+
+# ----------------------------------------------- wired into text overlays ---
+
+def test_kinetic_text_produces_an_animated_clip_with_alpha():
+    """3d_pop text used to be a static image with a fake drop shadow."""
+    from schemas import CaptionSpec, EditPlan, TextOverlay
+    from video_renderer import VideoRenderer
+
+    class _Stub:
+        _kinetic_text_clip = VideoRenderer._kinetic_text_clip
+        warn = staticmethod(lambda message: None)
+
+        def __init__(self):
+            self.width, self.height, self.fps = 480, 854, 24
+
+    clip = _Stub()._kinetic_text_clip(
+        TextOverlay(text="MOJA AI", style="3d_pop", color="#B14BFF"), duration=2.0
+    )
+    assert clip is not None
+    assert clip.mask is not None, "the type would arrive as an opaque rectangle"
+    assert clip.duration == pytest.approx(2.0, abs=0.05)
+
+    # It is genuinely animated: the arrival differs from the hold.
+    early = clip.get_frame(0.02)
+    settled = clip.get_frame(1.5)
+    assert not np.array_equal(early, settled)
+
+
+def test_a_short_overlay_still_gets_its_whole_punch():
+    from schemas import TextOverlay
+    from video_renderer import VideoRenderer
+
+    class _Stub:
+        _kinetic_text_clip = VideoRenderer._kinetic_text_clip
+        warn = staticmethod(lambda message: None)
+
+        def __init__(self):
+            self.width, self.height, self.fps = 320, 568, 24
+
+    clip = _Stub()._kinetic_text_clip(TextOverlay(text="GO", style="3d_pop"), duration=0.3)
+    assert clip is not None
+    assert clip.duration == pytest.approx(0.3, abs=0.05)
+
+
+def test_a_hex_colour_that_makes_no_sense_falls_back_instead_of_failing():
+    from video_renderer import _hex_to_rgb
+
+    assert _hex_to_rgb("#B14BFF") == (177, 75, 255)
+    assert _hex_to_rgb("f80") == (255, 136, 0)
+    assert _hex_to_rgb("chartreuse") == (255, 255, 255)
+    assert _hex_to_rgb("") == (255, 255, 255)
+    assert _hex_to_rgb("#GGGGGG") == (255, 255, 255)
