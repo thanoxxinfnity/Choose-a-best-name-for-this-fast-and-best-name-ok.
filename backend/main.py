@@ -72,14 +72,19 @@ from schemas import (
     VoiceInfo,
 )
 from export_presets import PRESETS, describe_cost, resolve_preset
-from editing_skill import load_skill, reset_skill
+from editing_skill import learn_from_research, load_skill, reset_skill
 import gallery as gallery_store
 from style_library import all_exemplars, validate_library
 from highlights import find_highlights
 from motion_graphics import THEME_TRANSITIONS, transition_names
 from sfx import describe_library, theme_palette
 from themes import THEMES, resolve_theme
-from trend_research import derive_style, research_trends
+from trend_research import (
+    derive_style,
+    extract_video_ids,
+    research_trends,
+    study_references,
+)
 from video_providers import (
     ProviderError,
     best_available,
@@ -693,6 +698,49 @@ def delete_gallery_item(item_id: str):
     if not gallery_store.delete_item(item_id):
         raise HTTPException(status_code=404, detail=f"Unknown gallery item '{item_id}'")
     return {"item_id": item_id, "deleted": True}
+
+
+@app.post("/api/v1/learn")
+def learn_from_reference_edits(
+    urls: List[str] = Form(...),
+    niche: str = Form(default=""),
+    credentials: JobCredentials = Depends(get_credentials),
+) -> Dict[str, Any]:
+    """Teach the editor from specific edits, not from a search.
+
+    A search finds what is popular. A handed-over list is what this user wants
+    their editor to sound like, which is a stronger signal and a far cheaper
+    one: search costs 100 quota units, this costs 1 for up to fifty videos.
+
+    What is learned is what the API can actually see - length, cadence implied
+    by the genre, the title grammar, the subjects and tags. It is metadata, not
+    the cutting itself; nothing here watches the references.
+    """
+    flattened: List[str] = []
+    for entry in urls:
+        flattened.extend(str(entry).split())
+    if not flattened:
+        raise HTTPException(status_code=422, detail="Give at least one YouTube link.")
+
+    report = study_references(
+        flattened, api_key=credentials.resolved_youtube_token(), niche=niche,
+    )
+    if report.error:
+        raise HTTPException(status_code=502, detail=report.error)
+
+    style = derive_style(report)
+    learned = learn_from_research(
+        niche or report.niche or "general", report, style, chosen=True,
+    )
+    skill = load_skill(refresh=True)
+    return {
+        "studied": report.sampled,
+        "requested": len(extract_video_ids(flattened)),
+        "learned": learned,
+        "style": style,
+        "report": report.to_prompt_block(),
+        "playbooks": sorted(skill.playbooks),
+    }
 
 
 @app.get("/api/v1/skill")

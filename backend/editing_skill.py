@@ -33,7 +33,7 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-SKILL_VERSION = 2
+SKILL_VERSION = 3
 SKILL_FILENAME = "editing_skill.json"
 MAX_PLAYBOOKS = 24
 # A mistake has to recur before it is worth spending prompt on.
@@ -189,14 +189,19 @@ class GenrePlaybook:
     keywords: List[str] = field(default_factory=list)
     updated_at: float = 0.0
     observations: int = 1
+    # True when the references were handed over deliberately rather than found
+    # by a search. Someone choosing ten edits is a much stronger statement
+    # about what they want than the top ten results for a keyword.
+    chosen: bool = False
 
     def to_line(self) -> str:
         shots = (
             f"{self.shot_seconds[0]:.1f}-{self.shot_seconds[1]:.1f}s shots"
             if len(self.shot_seconds) == 2 else "unknown shot length"
         )
+        source = "references you chose" if self.chosen else "winners"
         parts = [
-            f"{self.niche}: winners run ~{self.median_duration:.0f}s, {shots}, "
+            f"{self.niche}: {source} run ~{self.median_duration:.0f}s, {shots}, "
             f"about {self.suggested_cuts} cuts"
         ]
         if self.hooks:
@@ -280,17 +285,22 @@ class EditingSkill:
         wanted = (niche or "").strip().lower()
         ordered = sorted(
             self.playbooks.values(),
-            key=lambda p: (p.niche.lower() == wanted, p.observations, p.updated_at),
+            key=lambda p: (p.niche.lower() == wanted, p.chosen, p.observations, p.updated_at),
             reverse=True,
         )
         return ordered[:limit]
 
     # -------------------------------------------------------------- learning
-    def learn_from_research(self, niche: str, report: Any, style: Dict[str, Any]) -> bool:
+    def learn_from_research(self, niche: str, report: Any, style: Dict[str, Any],
+                            chosen: bool = False) -> bool:
         """Fold one trend report into the playbook for its niche.
 
         Repeated observations of the same niche are averaged rather than
-        overwritten, so one unusual sample cannot rewrite the playbook.
+        overwritten, so one unusual sample cannot rewrite the playbook - with
+        one exception. References someone handed over deliberately are not an
+        observation to average in; they are an instruction. Averaging ten
+        chosen edits into a keyword search dilutes exactly the signal that was
+        being given, so a chosen set replaces a searched one outright.
         """
         niche = (niche or "").strip().lower() or "general"
         if getattr(report, "error", "") or not getattr(report, "sampled", 0):
@@ -307,11 +317,15 @@ class EditingSkill:
             hooks=list(getattr(report, "hook_patterns", []) or [])[:4],
             keywords=list(getattr(report, "title_keywords", []) or [])[:8],
             updated_at=time.time(),
+            chosen=chosen,
         )
 
         existing = self.playbooks.get(niche)
-        if existing is None:
+        if existing is None or (chosen and not existing.chosen):
             self.playbooks[niche] = incoming
+        elif existing.chosen and not chosen:
+            # A search must not water down what the user picked.
+            return False
         else:
             self.playbooks[niche] = _blend(existing, incoming)
 
@@ -389,6 +403,7 @@ def _blend(existing: GenrePlaybook, incoming: GenrePlaybook) -> GenrePlaybook:
         keywords=_merge_unique(existing.keywords, incoming.keywords, 10),
         updated_at=time.time(),
         observations=total,
+        chosen=existing.chosen or incoming.chosen,
     )
 
 
@@ -439,10 +454,11 @@ def save_skill(skill: EditingSkill) -> Path:
     return path
 
 
-def learn_from_research(niche: str, report: Any, style: Dict[str, Any]) -> bool:
+def learn_from_research(niche: str, report: Any, style: Dict[str, Any],
+                        chosen: bool = False) -> bool:
     """Public hook: fold a trend report into the persistent skill."""
     skill = load_skill()
-    if skill.learn_from_research(niche, report, style):
+    if skill.learn_from_research(niche, report, style, chosen=chosen):
         save_skill(skill)
         return True
     return False
