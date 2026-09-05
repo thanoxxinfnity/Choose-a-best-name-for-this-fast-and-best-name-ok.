@@ -68,18 +68,44 @@ def test_a_fallback_description_never_names_subjects_or_writes_copy(clip):
     assert analysis.sticker_ideas == []
     assert analysis.text_ideas == []
     assert analysis.recognisable == ""
-    assert analysis.summary == ""
+    assert analysis.art_style == ""
+    # The summary is no longer the model's prose about imagined content; it is
+    # replaced by a description of the file itself.
+    assert "gamer" not in analysis.summary
+    assert "clip" in analysis.summary
 
 
-def test_the_measured_signal_survives_the_distrust(clip):
-    """Energy and mood are cheap to read; they are not what gets confabulated."""
+def test_what_the_file_measures_replaces_what_the_model_claimed(clip):
+    """There is no reason to keep a guess from a reading already judged unreliable
+    when motion, brightness and cut density measure the same thing directly."""
     analysis = _analyse(clip, settings.nim_vision_fallback_model)
-    assert analysis.energy == "high"
-    assert analysis.mood == "exciting"
+
+    assert analysis.energy in ("low", "medium", "high")
+    assert analysis.mood  # re-derived, not the model's word
+    assert analysis.suggested_theme
+    # The summary is now a description of the file, not of imagined content.
+    assert "clip" in analysis.summary and "energy" in analysis.summary
+
     # And everything that never came from the model at all.
     assert analysis.duration > 0
     assert analysis.width and analysis.height
     assert analysis.motion_curve
+
+
+def test_a_wrong_energy_claim_is_overruled_by_the_measurement(clip, monkeypatch):
+    """The small model called a fast, high-motion clip 'low energy'."""
+    payload = _payload(settings.nim_vision_fallback_model)
+    payload.update(energy="low", mood="calm", suggested_theme="normal")
+    with patch.object(va, "describe_with_vision", return_value=payload):
+        analysis = va.analyse_video(clip, nim_api_key="test-key")
+
+    measured = va.VideoAnalysis(
+        duration=analysis.duration, motion_curve=analysis.motion_curve,
+        scene_cuts=analysis.scene_cuts, brightness=analysis.brightness,
+    )
+    va._apply_local_fallback(measured)
+    assert analysis.energy == measured.energy
+    assert analysis.mood == measured.mood
 
 
 def test_the_user_is_told_the_description_was_not_reliable(clip):
@@ -94,9 +120,10 @@ def test_a_distrusted_content_type_cannot_steer_the_theme(clip):
     distrusted = _analyse(clip, settings.nim_vision_fallback_model)
 
     assert choose_theme(trusted).key == "ae_hype"
-    # With the reading discarded, the theme falls back to the measured signal
-    # rather than to a content type nobody verified.
+    # With the reading discarded, the theme comes from the measured signal
+    # rather than from a content type nobody verified.
     assert distrusted.content_type == "unknown"
+    assert choose_theme(distrusted).key == choose_theme(distrusted).key
 
 
 def test_the_flag_is_reported_to_the_app(clip):

@@ -581,21 +581,30 @@ def analyse_video(
 
 
 def _discard_invented_detail(analysis: VideoAnalysis) -> None:
-    """Keep what was measured, drop what was described.
+    """Drop everything the model said and re-derive it from the file.
 
-    Energy and mood are cheap and hard to get badly wrong from a contact
-    sheet; subjects, recognisable names, sticker prompts and caption copy are
-    exactly what a model confabulates, and each one becomes something the
-    viewer sees. Without them the planner writes from the user's prompt and
-    the measured signal, which fails far more gracefully than confident
+    Subjects, recognisable names, sticker prompts and caption copy are exactly
+    what a model confabulates, and each one becomes something the viewer sees.
+    Energy, mood and the suggested theme go too - not because they are as
+    damaging, but because there is no reason to keep a guess from a reading
+    already judged unreliable when motion, brightness and cut density measure
+    the same three things directly.
+
+    What is left is the file itself, and the planner then writes from that and
+    the user's prompt - which fails far more gracefully than confident
     nonsense does.
     """
     analysis.subjects = []
     analysis.sticker_ideas = []
     analysis.text_ideas = []
     analysis.recognisable = ""
+    analysis.art_style = ""
     analysis.summary = ""
     analysis.content_type = "unknown"
+    analysis.mood = ""
+    analysis.energy = ""
+    analysis.suggested_theme = ""
+    _apply_local_fallback(analysis)
     analysis.vision_error = (
         f"the primary vision model did not answer; '{analysis.vision_model}' "
         f"stood in and its description of the footage is not reliable enough "
