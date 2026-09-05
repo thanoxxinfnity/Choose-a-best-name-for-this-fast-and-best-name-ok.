@@ -462,6 +462,9 @@ class VoiceInfo(BaseModel):
     voice_id: str
     language: str
     deep: bool = False
+    layered: bool = False
+    custom: bool = False
+    note: str = ""
 
 
 class VideoProviderInfo(BaseModel):

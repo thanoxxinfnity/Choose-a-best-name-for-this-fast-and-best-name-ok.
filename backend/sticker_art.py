@@ -142,6 +142,34 @@ def _skull_extra(draw: ImageDraw.ImageDraw, size: int, fill: int = 255) -> None:
     )
 
 
+def _grin_extra(draw: ImageDraw.ImageDraw, size: int, fill: int = 255) -> None:
+    """Two eyes and a wide toothy grin, punched out of a round face.
+
+    A generic smirking face, drawn from primitives. The obvious thing to reach
+    for here is the Trollface meme, which is one artist's drawing and not ours
+    to reproduce; this reads the same way in an edit without copying it.
+    """
+    draw.ellipse([0.28 * size, 0.30 * size, 0.42 * size, 0.44 * size], fill=fill)
+    draw.ellipse([0.58 * size, 0.30 * size, 0.72 * size, 0.44 * size], fill=fill)
+
+    # The grin: a wide crescent, cut back by an arc so it curves upward.
+    draw.ellipse([0.18 * size, 0.46 * size, 0.82 * size, 0.84 * size], fill=fill)
+    draw.rectangle([0.18 * size, 0.46 * size, 0.82 * size, 0.60 * size], fill=0)
+    # Teeth: vertical bars left standing inside the grin.
+    for index in range(5):
+        left = (0.26 + index * 0.10) * size
+        draw.rectangle([left, 0.58 * size, left + 0.025 * size, 0.80 * size], fill=0)
+
+
+def _grin() -> List[Point]:
+    vertices: List[Point] = []
+    for step in range(56):
+        angle = step / 56 * 2 * math.pi
+        # Slightly wider than tall, the way a smirking cartoon head is drawn.
+        vertices.append((0.5 + 0.47 * math.cos(angle), 0.5 + 0.44 * math.sin(angle)))
+    return vertices
+
+
 def _skull() -> List[Point]:
     return [
         (0.50, 0.04), (0.78, 0.14), (0.90, 0.40), (0.84, 0.66), (0.72, 0.74),
@@ -172,6 +200,7 @@ SHAPES: Dict[str, Callable[[], List[Point]]] = {
     "play": _play,
     "crown": _crown,
     "skull": _skull,
+    "grin": _grin,
     "speech": _speech,
 }
 
@@ -185,6 +214,8 @@ _SHAPE_WORDS: Sequence[Tuple[Tuple[str, ...], str]] = (
     (("shield", "defend", "guard", "block", "armor", "armour"), "shield"),
     (("heart", "love", "like", "romance"), "heart"),
     (("subscribe", "play", "button", "watch", "video"), "play"),
+    (("troll", "trollface", "meme", "grin", "smirk", "laugh", "lol", "funny",
+      "clown", "smug"), "grin"),
     (("text", "quote", "talk", "say", "speech", "comment"), "speech"),
     (("sparkle", "shine", "glitter", "magic", "twinkle", "dew"), "sparkle"),
     (("star", "rating", "favourite", "favorite"), "star"),
@@ -262,9 +293,10 @@ def draw_sticker(
     # --- silhouette masks -------------------------------------------------
     mask = Image.new("L", (big, big), 0)
     ImageDraw.Draw(mask).polygon(polygon, fill=255)
-    if shape_name == "skull":
+    cutter = {"skull": _skull_extra, "grin": _grin_extra}.get(shape_name)
+    if cutter is not None:
         cut = Image.new("L", (big, big), 0)
-        _skull_extra(ImageDraw.Draw(cut), big, 255)
+        cutter(ImageDraw.Draw(cut), big, 255)
         mask = ImageChops.subtract(mask, cut)
 
     rim_width = max(4, int(big * 0.035))

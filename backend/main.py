@@ -91,7 +91,14 @@ from video_providers import (
     describe_providers,
     get_provider,
 )
-from voices import VOICE_PROFILES, resolve_voice
+from voices import (
+    VOICE_PROFILES,
+    all_voices,
+    delete_pack,
+    load_packs,
+    resolve_voice,
+    save_pack,
+)
 from video_analyzer import analyse_video
 from video_renderer import probe_clip, whisper_available
 
@@ -565,6 +572,7 @@ def list_sfx() -> Dict[str, Any]:
 @app.get("/api/v1/voices", response_model=List[VoiceInfo])
 def list_voices() -> List[VoiceInfo]:
     """Voice profiles the voiceover can use, shaping included."""
+    packs = load_packs(refresh=True)
     return [
         VoiceInfo(
             key=profile.key,
@@ -572,9 +580,61 @@ def list_voices() -> List[VoiceInfo]:
             voice_id=profile.voice_id,
             language=profile.language,
             deep=profile.pitch_semitones < -1.0,
+            layered=profile.is_layered,
+            custom=profile.key in packs,
+            note=profile.note,
         )
-        for profile in VOICE_PROFILES.values()
+        for profile in all_voices().values()
     ]
+
+
+@app.post("/api/v1/voices", response_model=VoiceInfo)
+def create_voice_pack(
+    key: str = Form(...),
+    label: str = Form(default=""),
+    base: str = Form(default="demon_king"),
+    note: str = Form(default=""),
+    pitch_semitones: Optional[float] = Form(default=None),
+    tempo: Optional[float] = Form(default=None),
+    reverb: Optional[float] = Form(default=None),
+    gain_db: Optional[float] = Form(default=None),
+    lowpass_hz: Optional[float] = Form(default=None),
+    highpass_hz: Optional[float] = Form(default=None),
+    sub_octave: Optional[float] = Form(default=None),
+    double_detune: Optional[float] = Form(default=None),
+    growl: Optional[float] = Form(default=None),
+    body_db: Optional[float] = Form(default=None),
+    presence_db: Optional[float] = Form(default=None),
+) -> VoiceInfo:
+    """Save a custom voice: a stock voice to speak, and shaping to give it character.
+
+    A pack cannot name its own voice id. One Polly does not have is a 400 at
+    render time, and the point of saving a pack is that it still works later
+    without being checked again - so it inherits the id from a voice that is
+    known to work and only the shaping is yours.
+    """
+    try:
+        profile = save_pack(
+            key, label, base=base, note=note,
+            pitch_semitones=pitch_semitones, tempo=tempo, reverb=reverb,
+            gain_db=gain_db, lowpass_hz=lowpass_hz, highpass_hz=highpass_hz,
+            sub_octave=sub_octave, double_detune=double_detune, growl=growl,
+            body_db=body_db, presence_db=presence_db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return VoiceInfo(
+        key=profile.key, label=profile.label, voice_id=profile.voice_id,
+        language=profile.language, deep=profile.pitch_semitones < -1.0,
+        layered=profile.is_layered, custom=True, note=profile.note,
+    )
+
+
+@app.delete("/api/v1/voices/{key}")
+def remove_voice_pack(key: str) -> Dict[str, Any]:
+    if not delete_pack(key):
+        raise HTTPException(status_code=404, detail=f"No voice pack named '{key}'.")
+    return {"deleted": key}
 
 
 @app.post("/api/v1/analyze")
