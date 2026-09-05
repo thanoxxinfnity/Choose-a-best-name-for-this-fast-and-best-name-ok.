@@ -25,6 +25,7 @@ import base64
 import io
 import json
 import logging
+import math
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
@@ -368,16 +369,31 @@ def build_contact_sheet(
     if not frames:
         return None
     count = len(frames)
-    columns = 2 if count > 1 else 1
-    rows = int(np.ceil(count / columns))
-    sheet = Image.new("RGB", (cell * columns, cell * rows), (12, 12, 16))
+    height, width = frames[0][1].shape[:2]
+    aspect = (width / height) if height else 1.0
+
+    # Cells are shaped like the footage and the column count is chosen to keep
+    # the whole sheet near square. Fitting portrait frames into square cells
+    # spends about half the model's pixel budget on black bars, and an odd
+    # frame count in a two-column grid leaves an empty cell for it to reason
+    # about - both of which cost accuracy the analysis cannot afford.
+    def penalty(columns: int) -> tuple:
+        rows = int(math.ceil(count / columns))
+        squareness = abs(math.log((columns * aspect) / rows))
+        return (columns * rows != count, squareness)
+
+    columns = min(range(1, count + 1), key=penalty)
+    rows = int(math.ceil(count / columns))
+
+    cell_height = cell
+    cell_width = max(16, int(round(cell * aspect)))
+    sheet = Image.new("RGB", (cell_width * columns, cell_height * rows), (12, 12, 16))
 
     for index, (_timestamp, frame) in enumerate(frames):
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        image.thumbnail((cell, cell), Image.LANCZOS)
-        x = (index % columns) * cell + (cell - image.width) // 2
-        y = (index // columns) * cell + (cell - image.height) // 2
-        sheet.paste(image, (x, y))
+        image = image.resize((cell_width, cell_height), Image.LANCZOS)
+        sheet.paste(image, ((index % columns) * cell_width,
+                            (index // columns) * cell_height))
 
     # Stay inside the model's image-token budget.
     pixels = sheet.width * sheet.height

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 import time
@@ -407,3 +408,60 @@ def test_the_ae_grammar_reached_kimis_skill():
     block = EditingSkill().to_system_block()
     assert "AE hype grammar" in block
     assert "0.7-1.8s" in block
+
+
+# ------------------------------------------- the contact sheet the model sees --
+
+def _sheet_size(width: int, height: int, count: int):
+    from video_analyzer import build_contact_sheet
+
+    frames = [
+        (float(index), np.full((height, width, 3), 40 + index * 30, dtype=np.uint8))
+        for index in range(count)
+    ]
+    data = build_contact_sheet(frames)
+    assert data
+    with Image.open(io.BytesIO(data)) as sheet:
+        return sheet.size, np.array(sheet.convert("RGB"))
+
+
+def test_portrait_frames_do_not_get_letterboxed_into_square_cells():
+    """Square cells spend about half the model's pixel budget on black bars."""
+    (_width, _height), pixels = _sheet_size(720, 1080, 4)
+    dark = float((pixels.max(axis=2) < 24).mean())
+    assert dark < 0.02, f"{dark:.0%} of the sheet is padding"
+
+
+def test_an_odd_frame_count_leaves_no_empty_cell():
+    """An empty cell is one more thing for the model to reason about."""
+    (_size), pixels = _sheet_size(720, 1080, 3)[0], _sheet_size(720, 1080, 3)[1]
+    assert float((pixels.max(axis=2) < 24).mean()) < 0.02
+
+
+def test_the_sheet_keeps_the_footage_aspect_ratio():
+    (width, height), _pixels = _sheet_size(720, 1080, 4)
+    # Four portrait frames, two by two: the sheet is portrait too.
+    assert height > width
+
+
+def test_landscape_footage_is_packed_the_other_way():
+    (width, height), _pixels = _sheet_size(1920, 1080, 4)
+    assert width > height
+
+
+def test_the_sheet_stays_inside_the_models_pixel_budget():
+    from video_analyzer import MAX_SHEET_PIXELS
+
+    (width, height), _pixels = _sheet_size(2160, 3840, 4)
+    assert width * height <= MAX_SHEET_PIXELS * 1.02
+
+
+def test_a_single_frame_still_makes_a_sheet():
+    (width, height), _pixels = _sheet_size(720, 1080, 1)
+    assert width > 0 and height > width * 0.5
+
+
+def test_no_frames_makes_no_sheet():
+    from video_analyzer import build_contact_sheet
+
+    assert build_contact_sheet([]) is None
