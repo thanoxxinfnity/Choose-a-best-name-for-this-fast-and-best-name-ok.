@@ -368,6 +368,85 @@ def render_text_rgba(
     return np.array(canvas)
 
 
+def render_caption_phrase(
+    words: Sequence[str],
+    highlight: int,
+    max_width: int,
+    font_size: int,
+    color: str = "#FFFFFF",
+    highlight_color: str = "#FFD400",
+    stroke_color: str = "#000000",
+) -> np.ndarray:
+    """A short phrase with one word picked out, as a caption band.
+
+    One word flashing on its own is the easy version and the worse one: the
+    reader gets no context, so every word costs a fresh fixation. Two or three
+    words with the spoken one lit is how the style actually works - the phrase
+    is already read by the time the highlight reaches its last word.
+
+    Layout depends only on the words, never on which one is lit, so every frame
+    of a phrase has identical geometry and the band does not twitch as the
+    highlight moves along it.
+    """
+    text = " ".join(word for word in words if word)
+    font = _load_font(font_size, devanagari=_has_devanagari(text))
+    stroke = max(3, font_size // 10)
+
+    probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+
+    def measure(value: str) -> Tuple[int, int]:
+        box = probe.textbbox((0, 0), value, font=font, stroke_width=stroke)
+        return box[2] - box[0], box[3] - box[1]
+
+    space_width = measure(" ")[0] or font_size // 3
+    sizes = [measure(word) for word in words]
+
+    # Greedy wrap, keeping each word's index so the highlight follows it.
+    lines: List[List[int]] = [[]]
+    line_width = 0
+    usable = max(max_width - 6 * stroke, font_size)
+    for index, (word_width, _height) in enumerate(sizes):
+        addition = word_width + (space_width if lines[-1] else 0)
+        if lines[-1] and line_width + addition > usable:
+            lines.append([index])
+            line_width = word_width
+        else:
+            lines[-1].append(index)
+            line_width += addition
+
+    line_gap = int(font_size * 0.18)
+    line_heights = [
+        max((sizes[index][1] for index in line), default=font_size) for line in lines
+    ]
+    line_widths = [
+        sum(sizes[index][0] for index in line) + space_width * max(len(line) - 1, 0)
+        for line in lines
+    ]
+    width = max(line_widths, default=1) + 6 * stroke
+    height = sum(line_heights) + line_gap * max(len(lines) - 1, 0) + 6 * stroke
+
+    canvas = Image.new("RGBA", (width, height + int(font_size * 0.3)), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    y = 3 * stroke
+    for line, line_height, this_width in zip(lines, line_heights, line_widths):
+        x = (width - this_width) // 2
+        for index in line:
+            draw.text(
+                (x, y), words[index], font=font,
+                fill=highlight_color if index == highlight else color,
+                stroke_width=stroke, stroke_fill=stroke_color,
+            )
+            x += sizes[index][0] + space_width
+        y += line_height + line_gap
+
+    glow = canvas.filter(ImageFilter.GaussianBlur(radius=max(2, font_size // 14)))
+    backdrop = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    backdrop.alpha_composite(glow)
+    backdrop.alpha_composite(canvas)
+    return np.array(backdrop)
+
+
 def _wrap_text(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
     words = text.split()
     if not words:
@@ -1491,51 +1570,71 @@ class VideoRenderer:
                              (array.shape[1], array.shape[0]))
 
     def _caption_layers(self, words: List[Any], duration: float) -> List[Any]:
+        """Word-level captions, a phrase at a time with the spoken word lit."""
         style = self.plan.captions
         anchor_x, anchor_y = anchor_for(style.position or "bottom_center")
         # Lift the caption band clear of a bottom anchored sticker.
         if anchor_y > 0.7:
             anchor_y = 0.72
         font_size = int(self.height * 0.046)
+        per_phrase = max(1, min(int(style.max_words_on_screen or 3), 6))
+        base_colour = style.color or "#FFFFFF"
+        lit_colour = style.highlight_color or "#FFD400"
+        max_width = int(self.width * 0.9)
         layers: List[Any] = []
 
-        for word in words:
-            start = max(0.0, float(word.start))
-            if start >= duration:
+        usable = [word for word in words if word.text.strip()]
+        for offset in range(0, len(usable), per_phrase):
+            phrase = usable[offset:offset + per_phrase]
+            texts = [word.text.strip().upper() for word in phrase]
+            phrase_start = max(0.0, float(phrase[0].start))
+            if phrase_start >= duration:
                 break
-            end = min(float(word.end), duration)
-            show_for = max(end - start, 0.18)
-            text = word.text.strip().upper()
-            if not text:
-                continue
-            try:
-                array = render_text_rgba(
-                    text,
-                    max_width=int(self.width * 0.9),
-                    font_size=font_size,
-                    color=style.highlight_color or "#FFD400",
-                    three_d=False,
-                )
-            except Exception:
-                continue
 
-            clip = _clip_from_rgba(array)
-            clip = _with_duration(clip, show_for)
-            clip = _with_start(clip, start)
-            clip = _with_fps(clip, self.fps)
+            for position_in_phrase, word in enumerate(phrase):
+                start = max(0.0, float(word.start))
+                if start >= duration:
+                    break
+                # Hold each highlight until the next word actually begins, so
+                # the band never blinks out between two words of one phrase.
+                if position_in_phrase + 1 < len(phrase):
+                    end = float(phrase[position_in_phrase + 1].start)
+                else:
+                    end = float(word.end)
+                end = min(max(end, start + 0.12), duration)
 
-            width, height = array.shape[1], array.shape[0]
-            x = int(self.width * anchor_x - width / 2)
-            y = int(self.height * anchor_y - height / 2)
-            pop = min(0.12, show_for * 0.4)
+                try:
+                    array = render_caption_phrase(
+                        texts, position_in_phrase, max_width=max_width,
+                        font_size=font_size, color=base_colour,
+                        highlight_color=lit_colour,
+                    )
+                except Exception:
+                    continue
 
-            def position(t, x=x, y=y, pop=pop):
-                if t < pop and pop > 0:
-                    lift = int(18 * (1 - t / pop))
-                    return (x, y + lift)
-                return (x, y)
+                clip = _clip_from_rgba(array)
+                clip = _with_duration(clip, end - start)
+                clip = _with_start(clip, start)
+                clip = _with_fps(clip, self.fps)
 
-            layers.append(_with_position(clip, position))
+                width, height = array.shape[1], array.shape[0]
+                x = int(self.width * anchor_x - width / 2)
+                y = int(self.height * anchor_y - height / 2)
+
+                # The band lifts in once, when its phrase arrives. Popping it on
+                # every word would make the whole line jump as the highlight
+                # travels, which is the twitch the shared layout exists to avoid.
+                if position_in_phrase == 0:
+                    pop = min(0.12, (end - start) * 0.4)
+
+                    def position(t, x=x, y=y, pop=pop):
+                        if pop > 0 and t < pop:
+                            return (x, y + int(18 * (1 - t / pop)))
+                        return (x, y)
+
+                    layers.append(_with_position(clip, position))
+                else:
+                    layers.append(_with_position(clip, (x, y)))
         return layers
 
     def _animate(self, clip, animation: str, position: str, duration: float, size: Tuple[int, int]):
