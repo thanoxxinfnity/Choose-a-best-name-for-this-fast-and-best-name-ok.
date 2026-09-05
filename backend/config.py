@@ -65,7 +65,10 @@ class Settings(BaseSettings):
 
     puter_inpaint_interface: str = "puter-image-generation"
     puter_inpaint_driver: str = "openai-image-generation"
-    puter_inpaint_method: str = "edit"
+    # Puter's image driver has no edit/inpaint method - only generation.
+    # The replacement is generated and composited locally; see
+    # PuterClient.inpaint_image.
+    puter_inpaint_method: str = "generate"
 
     # ----------------------------------------------------- nvidia nim / kimi --
     nim_base_url: str = "https://integrate.api.nvidia.com/v1"

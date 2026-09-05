@@ -37,6 +37,9 @@ class VoiceProfile:
     highpass_hz: int = 0           # removes rumble after pitching down
     reverb: float = 0.0            # 0..1, cathedral-ish tail
     gain_db: float = 0.0
+    # Shown next to the voice when what it is needs explaining - so a label
+    # never promises something the synthesiser cannot deliver.
+    note: str = ""
 
     @property
     def needs_shaping(self) -> bool:
@@ -50,15 +53,27 @@ class VoiceProfile:
         )
 
 
+# Polly's Indian English catalogue is Kajal (neural), Aditi and Raveena
+# (standard) - all female. It ships no male en-IN voice at all, so anything
+# claiming to be one here would either fail outright or be a pitched-down
+# female voice wearing a label that lies. Every voice_id below is one this
+# deployment actually accepts; test_voices_live.py checks that against the
+# real API rather than against this comment.
 VOICE_PROFILES: Dict[str, VoiceProfile] = {
     # ---- Indian accent (the blueprint default) ---------------------------
     "indian_accent": VoiceProfile(
         key="indian_accent", label="Indian English (female)",
         voice_id="Kajal", language="en-IN", engine="neural",
     ),
-    "indian_accent_male": VoiceProfile(
-        key="indian_accent_male", label="Indian English (male)",
-        voice_id="Arjun", language="en-IN", engine="neural",
+    "indian_accent_warm": VoiceProfile(
+        key="indian_accent_warm", label="Indian English (warm)",
+        voice_id="Raveena", language="en-IN", engine="standard",
+    ),
+    "indian_accent_low": VoiceProfile(
+        key="indian_accent_low", label="Indian English (low)",
+        voice_id="Kajal", language="en-IN", engine="neural",
+        pitch_semitones=-3.0, highpass_hz=70, lowpass_hz=8000,
+        note="Polly has no male Indian voice; this is the Indian voice lowered.",
     ),
     "hinglish": VoiceProfile(
         key="hinglish", label="Hindi / Hinglish",
@@ -66,11 +81,22 @@ VOICE_PROFILES: Dict[str, VoiceProfile] = {
     ),
 
     # ---- Deep, dark, mysterious narrator ---------------------------------
+    # Two of these on purpose: one keeps the Indian accent and buys its depth
+    # with pitch shifting, the other is a genuinely deep male voice that is
+    # not Indian. Which trade matters is the user's call, not ours.
     "deep_dark": VoiceProfile(
-        key="deep_dark", label="Deep dark mysterious (Indian male)",
-        voice_id="Arjun", language="en-IN", engine="neural",
-        pitch_semitones=-4.5, tempo=0.92, lowpass_hz=7200, highpass_hz=70,
+        key="deep_dark", label="Deep dark mysterious (Indian)",
+        voice_id="Kajal", language="en-IN", engine="neural",
+        pitch_semitones=-6.0, tempo=0.90, lowpass_hz=7000, highpass_hz=70,
         reverb=0.45, gain_db=1.5,
+        note="Indian accent kept; the depth comes from pitch shifting.",
+    ),
+    "deep_dark_male": VoiceProfile(
+        key="deep_dark_male", label="Deep dark mysterious (male)",
+        voice_id="Gregory", language="en-US", engine="neural",
+        pitch_semitones=-3.0, tempo=0.92, lowpass_hz=7200, highpass_hz=65,
+        reverb=0.45, gain_db=1.5,
+        note="A true deep male voice, but US English - Polly has no male Indian one.",
     ),
     "deep_dark_female": VoiceProfile(
         key="deep_dark_female", label="Deep dark mysterious (Indian female)",
@@ -85,8 +111,8 @@ VOICE_PROFILES: Dict[str, VoiceProfile] = {
         reverb=0.65, gain_db=2.0,
     ),
     "hype": VoiceProfile(
-        key="hype", label="High energy hype (Indian male)",
-        voice_id="Arjun", language="en-IN", engine="neural",
+        key="hype", label="High energy hype (Indian)",
+        voice_id="Kajal", language="en-IN", engine="neural",
         pitch_semitones=1.0, tempo=1.08, gain_db=1.0,
     ),
 
@@ -95,9 +121,17 @@ VOICE_PROFILES: Dict[str, VoiceProfile] = {
         key="us_accent", label="US English (female)",
         voice_id="Joanna", language="en-US", engine="neural",
     ),
+    "us_accent_male": VoiceProfile(
+        key="us_accent_male", label="US English (male)",
+        voice_id="Matthew", language="en-US", engine="neural",
+    ),
     "uk_accent": VoiceProfile(
         key="uk_accent", label="British English (female)",
         voice_id="Amy", language="en-GB", engine="neural",
+    ),
+    "uk_accent_male": VoiceProfile(
+        key="uk_accent_male", label="British English (male)",
+        voice_id="Brian", language="en-GB", engine="neural",
     ),
 }
 

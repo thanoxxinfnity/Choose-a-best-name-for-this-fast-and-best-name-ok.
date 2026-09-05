@@ -425,42 +425,72 @@ class PuterClient:
         output_path: Path,
         strength: float = 0.85,
     ) -> Path:
-        """Image-to-image / inpainting for a single extracted video frame."""
+        """Replace the masked region of a frame with generated content.
+
+        Puter's image driver exposes generation only - it has no edit or
+        inpaint method - so the edit happens here rather than there. The
+        replacement is generated at the frame's own aspect ratio and then
+        composited into the mask with a feathered edge.
+
+        The tempting shortcut is to post the frame to ``generate`` and hope:
+        that returns HTTP 200 and a perfectly good picture of something else
+        entirely, because the image argument is ignored. A silent wrong answer
+        is worse than an error, so the compositing is explicit.
+        """
         image_path = Path(image_path)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with Image.open(image_path) as probe:
-            width, height = probe.size
+            frame = probe.convert("RGB")
+            width, height = frame.size
+            frame_array = np.array(frame)
 
-        args: Dict[str, Any] = {
-            "prompt": prompt,
-            "image": _to_data_uri(image_path),
-            "width": width,
-            "height": height,
-            "strength": round(float(strength), 3),
-            "n": 1,
-            "response_format": "b64_json",
-        }
-        if mask_path is not None and Path(mask_path).exists():
-            args["mask"] = _to_data_uri(Path(mask_path))
+        with tempfile.TemporaryDirectory(prefix="puter-inpaint-") as tmp:
+            replacement_path = Path(tmp) / "replacement.png"
+            self.text_to_image(
+                f"{prompt}, photographic, matching lighting and perspective",
+                replacement_path, width=width, height=height,
+            )
+            with Image.open(replacement_path) as generated:
+                replacement = generated.convert("RGB")
+                if replacement.size != (width, height):
+                    replacement = replacement.resize((width, height), Image.LANCZOS)
+                replacement_array = np.array(replacement)
 
-        body, content_type, parsed = self.call_driver(
-            settings.puter_inpaint_interface,
-            settings.puter_inpaint_driver,
-            settings.puter_inpaint_method,
-            args,
-            accept="image/png",
+        alpha = _feathered_mask(mask_path, (width, height), strength)
+        blended = (
+            frame_array.astype(np.float32) * (1.0 - alpha)
+            + replacement_array.astype(np.float32) * alpha
         )
-        image = self._resolve_media(body, content_type, parsed, "image")
-        output_path.write_bytes(image)
-
-        # Puter may return a square canvas: force the original frame geometry
-        # back so the frames still line up when they are muxed into the video.
-        with Image.open(output_path) as edited:
-            if edited.size != (width, height):
-                edited.convert("RGB").resize((width, height), Image.LANCZOS).save(output_path, "PNG")
+        Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8)).save(output_path, "PNG")
         return output_path
+
+
+def _feathered_mask(
+    mask_path: Optional[Path], size: Tuple[int, int], strength: float
+) -> np.ndarray:
+    """A 0..1 blend map with a soft edge, shaped ``(h, w, 1)``.
+
+    A hard mask edge is the thing that makes a composite look pasted on, so the
+    boundary is blurred in proportion to the frame rather than by a fixed
+    number of pixels - the same seam has to look right at 720p and at 4K.
+    """
+    width, height = size
+    strength = float(min(max(strength, 0.0), 1.0))
+
+    if mask_path is not None and Path(mask_path).exists():
+        with Image.open(mask_path) as handle:
+            mask = handle.convert("L").resize((width, height), Image.LANCZOS)
+        alpha = np.array(mask).astype(np.float32) / 255.0
+    else:
+        # No mask means "repaint the whole frame", which is what an
+        # image-to-image request without one has always meant.
+        alpha = np.ones((height, width), dtype=np.float32)
+
+    feather = max(3, int(min(width, height) * 0.02)) | 1
+    alpha = cv2.GaussianBlur(alpha, (feather, feather), 0)
+    return (alpha * strength)[:, :, None]
 
 
 # ---------------------------------------------------------------------------
