@@ -57,8 +57,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -240,8 +242,83 @@ fun EditorScreen(
                 }
             }
 
+            // ---------------------------------------------------- analysis --
+            SectionCard(title = "2. Check what the AI sees") {
+                Text(
+                    "Read the first clip before rendering. A render takes minutes; "
+                    + "finding out then that the AI misread the footage costs all of them.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(
+                        onClick = viewModel::analyseFirstClip,
+                        enabled = state.clips.isNotEmpty() && !state.isAnalysing,
+                    ) { Text(if (state.isAnalysing) "Reading..." else "Read the clip") }
+                    if (state.analysis != null) {
+                        TextButton(onClick = viewModel::clearAnalysis) { Text("Clear") }
+                    }
+                }
+
+                state.analysis?.let { found ->
+                    if (!found.visionTrusted) {
+                        // The loudest thing on the card, because acting on a
+                        // confident wrong reading is the expensive mistake.
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                "The AI could not reliably identify this footage, so it has "
+                                + "thrown its own description away. Say what the clip is in "
+                                + "the prompt below - that is what the edit will follow.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(10.dp),
+                            )
+                        }
+                    }
+                    val measured = buildString {
+                        append("%.1fs".format(found.duration))
+                        append(" · ${found.width}x${found.height}")
+                        if (found.energy.isNotBlank()) append(" · ${found.energy} energy")
+                        if (found.bpm > 0) append(" · %.0f BPM".format(found.bpm))
+                        if (found.sceneCuts.isNotEmpty()) append(" · ${found.sceneCuts.size} cuts")
+                    }
+                    Text("Measured: $measured", style = MaterialTheme.typography.bodyMedium)
+
+                    if (found.visionTrusted) {
+                        Text(
+                            "Read as: ${found.contentType}"
+                                + if (found.subjects.isNotEmpty()) {
+                                    " (${found.subjects.joinToString(", ")})"
+                                } else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (found.summary.isNotBlank()) {
+                            Text(
+                                found.summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (found.theme.isNotBlank()) {
+                        Text(
+                            "Mode chosen: ${found.theme}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
             // ------------------------------------------------------ prompt --
-            SectionCard(title = "2. Tell the AI what to make") {
+            SectionCard(title = "3. Tell the AI what to make") {
                 OutlinedTextField(
                     value = state.prompt,
                     onValueChange = viewModel::setPrompt,
@@ -267,7 +344,7 @@ fun EditorScreen(
             }
 
             // ----------------------------------------------------- options --
-            SectionCard(title = "3. Options") {
+            SectionCard(title = "4. Options") {
                 ToggleRow(
                     title = "Word level captions",
                     subtitle = "Faster-Whisper animated subtitles",
@@ -494,7 +571,7 @@ fun EditorScreen(
             if (state.isRenderComplete) {
                 val previewUrl = viewModel.previewUrl()
                 if (previewUrl != null) {
-                    SectionCard(title = "4. Preview") {
+                    SectionCard(title = "5. Preview") {
                         VideoPreview(url = previewUrl)
                         state.job?.durationSeconds?.let { duration ->
                             val job = state.job
@@ -513,7 +590,7 @@ fun EditorScreen(
                         }
                     }
 
-                    SectionCard(title = "5. Export") {
+                    SectionCard(title = "6. Export") {
                         Button(
                             onClick = viewModel::downloadFinishedVideo,
                             enabled = !state.isDownloading,

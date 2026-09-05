@@ -54,6 +54,10 @@ data class EditorUiState(
     val downloadTotalBytes: Long = 0L,
     val savedUri: Uri? = null,
 
+    // What the backend read off the first clip, if it has been asked.
+    val analysis: AnalysisDto? = null,
+    val isAnalysing: Boolean = false,
+
     val health: HealthDto? = null,
     val statusMessage: String? = null,
     val errorMessage: String? = null,
@@ -166,6 +170,48 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun setMaxInpaints(value: Int) = _state.update { it.copy(maxInpaints = value) }
 
     fun dismissMessages() = _state.update { it.copy(statusMessage = null, errorMessage = null) }
+
+    // ------------------------------------------------------------ analysis
+    /** Read the first clip and show what the backend made of it.
+     *
+     * Worth its own step because the answer is not always right: when the
+     * description comes back untrusted the user is the only one who can say
+     * what the footage actually is, and the prompt is where they say it.
+     */
+    fun analyseFirstClip() {
+        val clip = _state.value.clips.firstOrNull()
+        if (clip == null) {
+            _state.update { it.copy(errorMessage = "Pick a clip first.") }
+            return
+        }
+        _state.update { it.copy(isAnalysing = true, errorMessage = null, analysis = null) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { ApiClient.analyzeClip(context, clip) }
+            result.fold(
+                onSuccess = { value ->
+                    _state.update {
+                        it.copy(
+                            isAnalysing = false,
+                            analysis = value,
+                            theme = if (it.theme == "auto" && value.theme.isNotBlank()) {
+                                value.theme
+                            } else {
+                                it.theme
+                            },
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(isAnalysing = false,
+                                errorMessage = error.message ?: "Could not read the clip.")
+                    }
+                },
+            )
+        }
+    }
+
+    fun clearAnalysis() = _state.update { it.copy(analysis = null) }
 
     // -------------------------------------------------------------- health
     fun refreshHealth() {

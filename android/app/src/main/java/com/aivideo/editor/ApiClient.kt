@@ -59,6 +59,31 @@ data class ClipInfoDto(
     @SerialName("has_audio") val hasAudio: Boolean = false,
 )
 
+/** What the backend read off one clip, before anything is rendered. */
+@Serializable
+data class AnalysisDto(
+    val duration: Double = 0.0,
+    val width: Int = 0,
+    val height: Int = 0,
+    @SerialName("content_type") val contentType: String = "unknown",
+    val subjects: List<String> = emptyList(),
+    @SerialName("art_style") val artStyle: String = "",
+    val mood: String = "",
+    val energy: String = "",
+    val summary: String = "",
+    val recognisable: String = "",
+    val bpm: Double = 0.0,
+    @SerialName("scene_cuts") val sceneCuts: List<Double> = emptyList(),
+    @SerialName("suggested_theme") val suggestedTheme: String = "",
+    val theme: String = "",
+    // False when the description came from a model whose reading is not
+    // trusted. The user has to see this: a confident wrong reading is what
+    // puts LEVEL UP on an anime edit.
+    @SerialName("vision_trusted") val visionTrusted: Boolean = true,
+    @SerialName("vision_model") val visionModel: String = "",
+    @SerialName("vision_error") val visionError: String = "",
+)
+
 @Serializable
 data class ThemeDto(
     val key: String,
@@ -325,6 +350,33 @@ object ApiClient {
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw IOException(errorMessage(response, body))
             json.decodeFromString(JobCreatedDto.serializer(), body)
+        }
+    }
+
+    /** Read one clip before committing to a render.
+     *
+     * The app used to send a prompt written blind: nothing showed what the
+     * backend thought the footage was until the finished video came back
+     * minutes later, wrong.
+     */
+    fun analyzeClip(context: Context, clip: SelectedClip): Result<AnalysisDto> = runCatching {
+        val body = UriRequestBody(
+            context = context,
+            uri = clip.uri,
+            mediaType = clip.mimeType.toMediaTypeOrNull() ?: "video/mp4".toMediaType(),
+            declaredLength = clip.sizeBytes,
+            onBytesWritten = {},
+        )
+        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("video", clip.displayName, body)
+            .build()
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/analyze")
+            .headers(authHeaders(context)).post(multipart).build()
+        client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, text))
+            json.decodeFromString(AnalysisDto.serializer(), text)
         }
     }
 
