@@ -131,7 +131,38 @@ def test_a_failed_task_raises_with_the_services_own_message():
             provider._await("t", lambda *_: None)
 
 
-def test_polling_gives_up_rather_than_hanging_forever(monkeypatch):
+def test_a_queue_that_never_starts_is_reported_as_that(monkeypatch):
+    """Not as a flat timeout: a task the service never handed to the model is
+    a different failure, with a different owner, from a slow render."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "videoforge_timeout", 1)
+    provider = get_provider("videoforge")
+    queued = _Response(200, {"data": {"status": "QUEUED", "submitted_at": None}})
+    clock = iter([0.0, 0.0, 0.5, 5.0, 5.0, 5.0])
+    with patch.object(vp.requests, "get", lambda *a, **k: queued), \
+         patch.object(vp.time, "time", lambda: next(clock)):
+        with pytest.raises(ProviderError, match="never started it"):
+            provider._await("t", lambda *_: None)
+
+
+def test_a_render_that_started_but_ran_long_says_so(monkeypatch):
+    """Polling has to actually happen for either claim to be made."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "videoforge_timeout", 1)
+    provider = get_provider("videoforge")
+    running = _Response(200, {"data": {"status": "PROCESSING",
+                                       "submitted_at": "2026-09-06T04:00:00Z"}})
+    clock = iter([0.0, 0.0, 0.5, 5.0, 5.0, 5.0])
+    with patch.object(vp.requests, "get", lambda *a, **k: running), \
+         patch.object(vp.time, "time", lambda: next(clock)):
+        with pytest.raises(ProviderError, match="did not finish"):
+            provider._await("t", lambda *_: None)
+
+
+def test_nothing_is_claimed_when_the_task_was_never_polled(monkeypatch):
+    """With the budget already gone there is no reading to reason from."""
     from config import settings
 
     monkeypatch.setattr(settings, "videoforge_timeout", 0)

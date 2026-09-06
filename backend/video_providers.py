@@ -300,6 +300,8 @@ class VideoForgeProvider(VideoProvider):
 
         deadline = time.time() + settings.videoforge_timeout
         seen = ""
+        observed = False
+        started_upstream = False
         while time.time() < deadline:
             time.sleep(settings.videoforge_poll_seconds)
             response = requests.get(f"{self._base()}/api/v1/tasks/{task_id}", timeout=60)
@@ -310,6 +312,12 @@ class VideoForgeProvider(VideoProvider):
             node = response.json()
             node = node.get("data", node) if isinstance(node, dict) else {}
             status = str(node.get("status") or "").upper()
+            observed = True
+            # The service stamps this when it hands the job to the model. A task
+            # that never gets one is not a slow render, it is a queue that is
+            # not draining - a different problem with a different owner, and
+            # worth saying so rather than reporting a flat timeout.
+            started_upstream = started_upstream or bool(node.get("submitted_at"))
             if status != seen:
                 seen = status
                 elapsed = settings.videoforge_timeout - (deadline - time.time())
@@ -321,6 +329,16 @@ class VideoForgeProvider(VideoProvider):
                 raise ProviderError(
                     f"VideoForge failed: {node.get('error') or node.get('message') or status}"
                 )
+        if observed and not started_upstream:
+            raise ProviderError(
+                f"VideoForge accepted task {task_id} but never started it: it sat "
+                f"queued for {settings.videoforge_timeout}s without being handed to "
+                f"the model. The endpoint is up but its render queue is not "
+                f"draining - check {self._base()}/api/v1/stats for how many tasks "
+                f"are queued against how many are processing."
+            )
+        # Either it was seen rendering, or the budget was gone before a single
+        # poll - and in that case nothing was observed, so nothing is claimed.
         raise ProviderError(
             f"VideoForge task {task_id} did not finish within "
             f"{settings.videoforge_timeout}s."
