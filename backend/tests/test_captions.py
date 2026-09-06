@@ -156,3 +156,127 @@ def test_blank_words_are_skipped():
 
 def test_no_words_means_no_layers():
     assert _Renderer(_plan())._caption_layers([], duration=5.0) == []
+
+
+# ------------------------------------- captioning from the script -----------
+
+def _voice_file(tmp_path, name, seconds):
+    """A real audio file so the duration is measured, not assumed."""
+    import subprocess
+
+    from puter_integration import ffmpeg_binary
+
+    path = tmp_path / name
+    subprocess.run(
+        [ffmpeg_binary(), "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", f"sine=frequency=200:duration={seconds}",
+         "-c:a", "libmp3lame", str(path)],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+class _ScriptRenderer:
+    """Just enough of VideoRenderer to exercise caption sourcing."""
+
+    from video_renderer import VideoRenderer
+
+    _caption_words_from_plan = VideoRenderer._caption_words_from_plan
+    _track = VideoRenderer._track
+
+    def __init__(self, plan, intro_offset=0.0):
+        self.plan = plan
+        self._intro_offset = intro_offset
+        self._open_clips = []
+
+
+def _voice_plan(*lines):
+    from schemas import AudioSpec, CaptionSpec, EditPlan, TtsLine
+
+    return EditPlan(
+        captions=CaptionSpec(enabled=True),
+        audio=AudioSpec(use_puter_tts=True, tts_lines=[
+            TtsLine(text=text, start_time=str(start)) for text, start in lines
+        ]),
+    )
+
+
+def test_the_narration_is_captioned_from_the_script_not_a_transcription(tmp_path):
+    """The words are already known; deepening the voice is what breaks ASR.
+
+    Six semitones down with a sub-octave layer under it is exactly what stops
+    a recogniser hearing the words - "Know your place" came back as
+    "NO, PLEASE. YOUR" from a real render.
+    """
+    audio = _voice_file(tmp_path, "line.mp3", 2.0)
+    plan = _voice_plan(("Know your place", 1.0))
+    words = _ScriptRenderer(plan)._caption_words_from_plan([(audio, 1.0, 1.0)])
+
+    assert [w.text for w in words] == ["Know", "your", "place"]
+    assert words[0].start == pytest.approx(1.0, abs=0.05)
+    # The line's words span its measured audio, not a guessed length.
+    assert words[-1].end == pytest.approx(3.0, abs=0.15)
+
+
+def test_each_line_is_timed_from_its_own_audio(tmp_path):
+    short = _voice_file(tmp_path, "a.mp3", 1.0)
+    long = _voice_file(tmp_path, "b.mp3", 3.0)
+    plan = _voice_plan(("one two", 0.5), ("three four", 5.0))
+    words = _ScriptRenderer(plan)._caption_words_from_plan(
+        [(short, 0.5, 1.0), (long, 5.0, 1.0)]
+    )
+
+    first = [w for w in words if w.text in ("one", "two")]
+    second = [w for w in words if w.text in ("three", "four")]
+    assert first[-1].end - first[0].start == pytest.approx(1.0, abs=0.15)
+    assert second[-1].end - second[0].start == pytest.approx(3.0, abs=0.2)
+    assert second[0].start == pytest.approx(5.0, abs=0.05)
+
+
+def test_longer_words_get_more_of_the_line(tmp_path):
+    audio = _voice_file(tmp_path, "c.mp3", 2.0)
+    plan = _voice_plan(("I understand", 0.0))
+    words = _ScriptRenderer(plan)._caption_words_from_plan([(audio, 0.0, 1.0)])
+    short, long = words[0], words[1]
+    assert (long.end - long.start) > (short.end - short.start)
+
+
+def test_a_spliced_intro_shifts_the_captions(tmp_path):
+    audio = _voice_file(tmp_path, "d.mp3", 1.0)
+    plan = _voice_plan(("hello there", 2.0))
+    words = _ScriptRenderer(plan, intro_offset=1.5)._caption_words_from_plan(
+        [(audio, 2.0, 1.0)]
+    )
+    assert words[0].start == pytest.approx(3.5, abs=0.05)
+
+
+def test_a_plain_script_with_no_timed_lines_still_captions(tmp_path):
+    from schemas import AudioSpec, CaptionSpec, EditPlan
+
+    audio = _voice_file(tmp_path, "e.mp3", 1.5)
+    plan = EditPlan(
+        captions=CaptionSpec(enabled=True),
+        audio=AudioSpec(use_puter_tts=True, tts_script="one small step"),
+    )
+    words = _ScriptRenderer(plan)._caption_words_from_plan([(audio, 0.0, 1.0)])
+    assert [w.text for w in words] == ["one", "small", "step"]
+
+
+def test_no_voiceover_falls_back_to_transcription(tmp_path):
+    """Whisper is still the right tool for captioning the source audio."""
+    plan = _voice_plan(("something", 0.0))
+    assert _ScriptRenderer(plan)._caption_words_from_plan([]) == []
+
+
+def test_a_mismatched_count_is_not_guessed_at(tmp_path):
+    """Two files against three lines means the pairing is unknown."""
+    audio = _voice_file(tmp_path, "f.mp3", 1.0)
+    plan = _voice_plan(("a b", 0.0), ("c d", 2.0), ("e f", 4.0))
+    assert _ScriptRenderer(plan)._caption_words_from_plan([(audio, 0.0, 1.0)]) == []
+
+
+def test_a_missing_audio_file_is_skipped_not_fatal(tmp_path):
+    plan = _voice_plan(("gone", 0.0))
+    assert _ScriptRenderer(plan)._caption_words_from_plan(
+        [(tmp_path / "nope.mp3", 0.0, 1.0)]
+    ) == []

@@ -1382,11 +1382,19 @@ class VideoRenderer:
         self.report(JobStage.RENDERING, 0.71, "Laying out the on-screen text")
         layers.extend(self._text_layers(duration))
 
-        self.report(JobStage.RENDERING, 0.73, "Exporting the audio for captioning")
-        caption_source = self._export_audio_for_captions(audio_clip, voiceover)
-        if self.plan.captions.enabled and settings.enable_captions and caption_source:
-            self.report(JobStage.CAPTIONS, 0.74, "Transcribing word level captions with Faster-Whisper")
-            words = transcribe_words(caption_source)
+        if self.plan.captions.enabled and settings.enable_captions:
+            # Prefer the script we already have over a guess at it.
+            words = self._caption_words_from_plan(voiceover)
+            if words:
+                self.report(JobStage.CAPTIONS, 0.74,
+                            f"Captioning {len(words)} word(s) from the script")
+            else:
+                self.report(JobStage.RENDERING, 0.73, "Exporting the audio for captioning")
+                caption_source = self._export_audio_for_captions(audio_clip, voiceover)
+                if caption_source:
+                    self.report(JobStage.CAPTIONS, 0.74,
+                                "Transcribing word level captions with Faster-Whisper")
+                    words = transcribe_words(caption_source)
             if words:
                 layers.extend(self._caption_layers(words, duration))
             else:
@@ -1572,6 +1580,50 @@ class VideoRenderer:
         )
         clip = self._track(AudioFileClip(str(track)))
         return _volume(clip, settings.sfx_audio_gain)
+
+    def _caption_words_from_plan(
+        self, voiceover: Sequence[Tuple[Path, float, float]]
+    ) -> List[CaptionWord]:
+        """Caption the narration from the script, not from a transcription of it.
+
+        The words are already known - the planner wrote them. Synthesising
+        them, deepening the voice six semitones with a sub-octave layer under
+        it, and then asking a recogniser to guess them back is both wasteful
+        and lossy: the shaping that gives the voice its weight is exactly what
+        stops it being recognised, so "Know your place" came back as
+        "NO, PLEASE. YOUR".
+
+        Timing is shared out across each line's measured audio in proportion to
+        word length, which tracks speaking time closely enough at this scale.
+        """
+        lines = self.plan.audio.timed_lines
+        if not lines:
+            script = self.plan.audio.tts_script.strip()
+            lines = [TtsLine(text=script, start_time="00:00:00")] if script else []
+        if not lines or len(lines) != len(voiceover):
+            return []
+
+        words: List[CaptionWord] = []
+        for (path, start, _gain), line in zip(voiceover, lines):
+            spoken = [word for word in line.text.split() if word.strip()]
+            if not spoken or not Path(path).exists():
+                continue
+            try:
+                clip = self._track(AudioFileClip(str(path)))
+                length = float(clip.duration or 0.0)
+            except Exception:
+                continue
+            if length <= 0:
+                continue
+
+            at = max(0.0, start + self._intro_offset)
+            weights = [len(word) + 1 for word in spoken]
+            total = float(sum(weights))
+            for word, weight in zip(spoken, weights):
+                span = length * (weight / total)
+                words.append(CaptionWord(word, at, at + span))
+                at += span
+        return words
 
     def _export_audio_for_captions(
         self, audio_clip, voiceover: Sequence[Tuple[Path, float, float]]
