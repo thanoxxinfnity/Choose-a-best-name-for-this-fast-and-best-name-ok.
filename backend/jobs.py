@@ -367,6 +367,10 @@ class JobManager:
             if status is None:
                 raise RenderError(f"Job {job_id} disappeared before it started.")
 
+            # Resolved once, here, because two different services want it: the
+            # vision pass below and - through this client - the cloned voices,
+            # which are synthesised by NVIDIA rather than by Puter.
+            nim_key = request.credentials.resolved_nim_key()
             puter = PuterClient(
                 api_key=request.credentials.resolved_puter_key(),
                 nim_api_key=nim_key,
@@ -383,7 +387,6 @@ class JobManager:
             # -------------------------------------- 1. look at the footage
             self._update(job_id, stage=JobStage.ANALYZING, progress=0.02,
                          message="Analysing what is actually in the footage")
-            nim_key = request.credentials.resolved_nim_key()
             analyses: List[VideoAnalysis] = []
             # The vision pass is the slowest thing in the pipeline - minutes a
             # clip. It exists to tell the planner what it is looking at, so

@@ -280,3 +280,94 @@ def test_a_missing_audio_file_is_skipped_not_fatal(tmp_path):
     assert _ScriptRenderer(plan)._caption_words_from_plan(
         [(tmp_path / "nope.mp3", 0.0, 1.0)]
     ) == []
+
+
+# --------------------------------------------------- phrases and sentences ---
+
+def test_a_caption_band_never_mixes_two_spoken_lines():
+    """"NAHI SAKTE. APNI" was the tail of one line and the head of the next.
+
+    Grouping every three words regardless of where they came from builds a
+    sentence nobody said, so a phrase must stop at a line boundary even when
+    it has room left.
+    """
+    from video_renderer import CaptionWord
+
+    words = [
+        CaptionWord("tum", 0.0, 0.3, group=0),
+        CaptionWord("mujhe", 0.3, 0.6, group=0),
+        CaptionWord("haara", 0.6, 0.9, group=0),
+        CaptionWord("nahi", 0.9, 1.2, group=0),
+        CaptionWord("sakte", 1.2, 1.5, group=0),
+        CaptionWord("apni", 2.0, 2.3, group=1),
+        CaptionWord("aukaat", 2.3, 2.6, group=1),
+    ]
+    phrases = _phrases(words, per_phrase=3)
+
+    assert [[w.text for w in phrase] for phrase in phrases] == [
+        ["tum", "mujhe", "haara"],
+        ["nahi", "sakte"],
+        ["apni", "aukaat"],
+    ]
+    for phrase in phrases:
+        assert len({w.group for w in phrase}) == 1, "a band spans two lines"
+
+
+def test_a_phrase_still_fills_up_to_the_limit_inside_one_line():
+    from video_renderer import CaptionWord
+
+    words = [CaptionWord(f"w{i}", i * 0.2, i * 0.2 + 0.2, group=0) for i in range(7)]
+    phrases = _phrases(words, per_phrase=3)
+    assert [len(p) for p in phrases] == [3, 3, 1]
+
+
+def _phrases(words, per_phrase):
+    """The grouping _caption_layers does, isolated from rendering."""
+    grouped = []
+    for word in words:
+        same = grouped and word.group == grouped[-1][0].group
+        if same and len(grouped[-1]) < per_phrase:
+            grouped[-1].append(word)
+        else:
+            grouped.append([word])
+    return grouped
+
+
+def test_transcribed_words_are_grouped_by_sentence():
+    """Transcription has no line numbers, so a full stop is the boundary."""
+    import video_renderer
+
+    class _Word:
+        def __init__(self, word, start, end):
+            self.word, self.start, self.end = word, start, end
+
+    class _Segment:
+        def __init__(self, words):
+            self.words = words
+
+    class _Model:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, *a, **k):
+            return [_Segment([
+                _Word("know", 0.0, 0.3), _Word("your", 0.3, 0.6),
+                _Word("place.", 0.6, 0.9),
+                _Word("bow", 1.0, 1.3), _Word("down.", 1.3, 1.6),
+            ])], None
+
+    import sys as _sys
+    import types as _types
+    fake = _types.ModuleType("faster_whisper")
+    fake.WhisperModel = _Model
+    saved = _sys.modules.get("faster_whisper")
+    _sys.modules["faster_whisper"] = fake
+    try:
+        words = video_renderer.transcribe_words(Path("nowhere.wav"))
+    finally:
+        if saved is None:
+            _sys.modules.pop("faster_whisper", None)
+        else:
+            _sys.modules["faster_whisper"] = saved
+
+    assert [w.group for w in words] == [0, 0, 0, 1, 1]

@@ -488,3 +488,71 @@ def test_a_probe_that_fails_is_survived():
     plan = _plan(2.0, 2.0, 2.0)
     _, diagnosis = review(plan, frame_probe=broken)
     assert not any(f.rule == "dark_edge" for f in diagnosis.findings)
+
+
+# ---------------------------------------------------- keys that go nowhere ---
+
+def test_a_key_the_plan_does_not_have_is_named_not_dropped_in_silence():
+    """A real plan set 'text_overlays' at the top level and rendered no titles.
+
+    It validated, it dropped the key, and it said nothing - which sends
+    whoever notices the missing titles into the renderer after a fault that is
+    not there.
+    """
+    plan = EditPlan.model_validate({
+        "edit_timeline": [
+            {"start_time": "00:00:00", "end_time": "00:00:02", "source_index": 0},
+            {"start_time": "00:00:02", "end_time": "00:00:04", "source_index": 0},
+        ],
+        "text_overlays": [{"text": "SHINJUKU", "start_time": "00:00:00"}],
+    })
+    _, diagnosis = review(plan)
+
+    finding = next(f for f in diagnosis.findings if f.rule == "stray_key")
+    assert "text_overlays" in finding.detail
+    assert "segment" in finding.detail, "it must say where the key belongs"
+    assert finding.severity == SERIOUS
+
+
+def test_a_plan_with_no_stray_keys_says_nothing_about_them():
+    plan = _plan(1.6, 2.2, 1.8)
+    _, diagnosis = review(plan, clip_durations=[60.0])
+    assert "stray_key" not in _rules(diagnosis)
+
+
+# ------------------------------------------------- how long a line takes -----
+
+def test_the_speaking_estimate_errs_slow_against_real_delivery():
+    """The estimate started at 2.6 words a second and under-fired everywhere.
+
+    Five real synthesised lines came back at 1.14, 1.14, 1.29, 1.84 and 2.51
+    words a second - a 2.2x spread that no single constant covers exactly. The
+    two errors are not equal, so the constant is chosen to err slow: estimating
+    short runs lines into each other, estimating long merely spaces them out.
+    This pins the direction, and a ceiling so 'slow' cannot become absurd.
+    """
+    from plan_doctor import spoken_seconds
+
+    measured = [(3, 2.64), (6, 5.28), (5, 1.99), (4, 3.10), (6, 3.26)]
+    short = [(w, r) for w, r in measured if spoken_seconds(" ".join(["x"] * w)) < r]
+    assert len(short) <= 1, (
+        f"the estimate is short on {len(short)} of {len(measured)} real lines: {short}"
+    )
+    for words, real in measured:
+        assert spoken_seconds(" ".join(["x"] * words)) <= real * 2.5, (
+            f"{words} words estimated far beyond the {real:.2f}s it really took"
+        )
+
+
+def test_lines_that_only_collide_at_the_real_speaking_rate_are_caught():
+    """Two lines 2.4s apart fit at reading pace and collide when spoken."""
+    plan = _plan(4.0, 4.0, 4.0)
+    plan.audio = AudioSpec(use_puter_tts=True, tts_lines=[
+        TtsLine(text="do sabse takatwar shraap aamne saamne", start_time="00:00:00.500"),
+        TtsLine(text="tum mujhe haara nahi sakte", start_time="00:00:02.900"),
+    ])
+    plan, diagnosis = review(plan)
+
+    assert "voice_overlap" in _rules(diagnosis)
+    starts = sorted(line.start_seconds for line in plan.audio.tts_lines)
+    assert starts[1] - starts[0] > 2.4, "the second line was not pushed clear"

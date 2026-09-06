@@ -178,6 +178,110 @@ def composite_over(foreground_rgba: np.ndarray, background: Frame) -> Frame:
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
+def _light_direction(background: Frame) -> Tuple[float, float]:
+    """Where the brightest part of the plate sits, as offsets in -1..1.
+
+    A cut-out lit from the wrong side is the single loudest tell that it was
+    pasted on, and the plate already says which side the light is on, so it is
+    read rather than guessed.
+    """
+    small = cv2.resize(background, (16, 16), interpolation=cv2.INTER_AREA)
+    luma = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    luma = np.maximum(luma - luma.mean(), 0.0)
+    total = float(luma.sum())
+    if total <= 1e-6:
+        return 0.0, -1.0
+    ys, xs = np.mgrid[0:16, 0:16]
+    x = float((luma * xs).sum() / total) / 7.5 - 1.0
+    y = float((luma * ys).sum() / total) / 7.5 - 1.0
+    return x, y
+
+
+def depth_composite(
+    foreground_rgba: np.ndarray,
+    background: Frame,
+    shadow: float = 0.55,
+    rim: float = 0.45,
+    haze: float = 0.22,
+    colour_match: float = 0.35,
+) -> Frame:
+    """Composite a cut-out so it reads as standing *in* the plate, not on it.
+
+    A straight alpha-over is geometrically correct and still looks pasted, and
+    the reasons are always the same four: the subject casts no shadow, it is
+    lit from a direction the plate does not agree with, it has none of the
+    plate's atmosphere in front of it, and its colours were graded for a
+    different scene. Each is cheap to answer:
+
+    * a contact shadow, offset away from the plate's own light and blurred
+      with distance, so the subject is standing on something;
+    * a rim from the same direction as that light, which is what actually
+      sells depth - the eye reads the edge before it reads the pose;
+    * a veil of the plate's own colour over the subject, thickest where the
+      plate is brightest, standing in for the air between them;
+    * a pull of the subject's mean colour toward the plate's, so it belongs to
+      the same grade.
+
+    Every amount is 0..1 and every one of them off gives back plain
+    ``composite_over``.
+    """
+    if background.shape[:2] != foreground_rgba.shape[:2]:
+        background = cv2.resize(
+            background, (foreground_rgba.shape[1], foreground_rgba.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    alpha = foreground_rgba[:, :, 3].astype(np.float32) / 255.0
+    subject = foreground_rgba[:, :, :3].astype(np.float32)
+    plate = background.astype(np.float32)
+    height, width = alpha.shape
+    light_x, light_y = _light_direction(background)
+
+    if colour_match > 0.001 and alpha.sum() > 1.0:
+        weights = alpha[:, :, None]
+        subject_mean = (subject * weights).sum(axis=(0, 1)) / max(weights.sum(), 1.0)
+        plate_mean = plate.reshape(-1, 3).mean(axis=0)
+        subject = subject + (plate_mean - subject_mean) * float(colour_match)
+
+    if shadow > 0.001:
+        # Cast away from the light and down: a shadow that falls toward the
+        # light source reads as a second, wrong sun.
+        offset_x = int(round(-light_x * width * 0.035))
+        offset_y = int(round(max(0.02, 0.03 - light_y * 0.02) * height))
+        cast = np.roll(np.roll(alpha, offset_y, axis=0), offset_x, axis=1)
+        if offset_y > 0:
+            cast[:offset_y, :] = 0.0
+        cast = cv2.GaussianBlur(cast, (0, 0), sigmaX=max(2.0, min(height, width) * 0.02))
+        plate = plate * (1.0 - (cast * float(shadow))[:, :, None])
+
+    if rim > 0.001:
+        # The lit edge is the sliver the subject covers that a copy nudged
+        # toward the light does not.
+        step_x = max(1, int(round(min(height, width) * 0.006)))
+        # Displace the copy AWAY from the light, so the sliver the subject
+        # keeps is the edge facing it. Rolling toward the light instead lights
+        # the far side, which is the same wrong-sun tell the shadow avoids.
+        shifted = np.roll(np.roll(alpha, int(round(-light_y * step_x)), axis=0),
+                          int(round(-light_x * step_x)), axis=1)
+        edge = np.clip(alpha - shifted, 0.0, 1.0)
+        edge = cv2.GaussianBlur(edge, (0, 0), sigmaX=max(1.0, step_x * 0.8))
+        # In the plate's own light colour, so the rim cannot be a colour that
+        # is nowhere in the scene.
+        bright = plate.reshape(-1, 3)
+        light_colour = bright[cv2.cvtColor(background, cv2.COLOR_RGB2GRAY).ravel()
+                              .argsort()[-max(len(bright) // 50, 1):]].mean(axis=0)
+        subject = subject + edge[:, :, None] * light_colour * float(rim) * 1.6
+
+    if haze > 0.001:
+        veil = float(haze) * (0.4 + 0.6 * cv2.GaussianBlur(
+            cv2.cvtColor(background, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0,
+            (0, 0), sigmaX=max(4.0, min(height, width) * 0.05)))
+        atmosphere = cv2.GaussianBlur(plate, (0, 0), sigmaX=max(6.0, min(height, width) * 0.06))
+        subject = subject * (1.0 - veil[:, :, None]) + atmosphere * veil[:, :, None]
+
+    blended = subject * alpha[:, :, None] + plate * (1.0 - alpha[:, :, None])
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
 _VIGNETTE_CACHE: dict = {}
 
 

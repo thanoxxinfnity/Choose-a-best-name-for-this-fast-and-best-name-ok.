@@ -126,6 +126,7 @@ def diagnose(
             "empty_timeline", BLOCKING, "the timeline has no segments at all."))
         return diagnosis
 
+    _check_stray_keys(plan, diagnosis)
     _check_footage_exists(plan, clip_durations, diagnosis, treat)
     _check_the_hook(plan, diagnosis, treat)
     _check_rhythm(plan, theme, diagnosis, treat)
@@ -137,6 +138,41 @@ def diagnose(
     _check_the_ending(plan, diagnosis, treat)
     _check_dark_edges(plan, frame_probe, diagnosis, treat)
     return diagnosis
+
+
+# Where each misplaced key actually belongs, for the ones worth naming.
+STRAY_KEY_HOMES: Dict[str, str] = {
+    "text_overlays": "each segment's own 'text_overlay'",
+    "text_overlay": "each segment's own 'text_overlay'",
+    "stickers": "each segment's own 'puter_sticker'",
+    "puter_sticker": "each segment's own 'puter_sticker'",
+    "transitions": "each segment's own 'transition'",
+    "timeline": "'edit_timeline'",
+    "segments": "'edit_timeline'",
+    "voice_lines": "'audio.tts_lines'",
+    "tts_lines": "'audio.tts_lines'",
+    "music": "'audio'",
+}
+
+
+def _check_stray_keys(plan: EditPlan, diagnosis: Diagnosis) -> None:
+    """A key the plan does not have is dropped in silence, and looks like a bug.
+
+    The model writing these plans is guessing at a schema, and so is anyone
+    writing one by hand: a top-level 'text_overlays' list validates fine,
+    renders nothing, and reports nothing, which sends whoever notices the
+    missing titles into the renderer looking for a fault that is not there.
+    Naming the key and where it belongs turns a silent drop into an answer.
+    """
+    stray = sorted(getattr(plan, "model_extra", None) or {})
+    for key in stray:
+        home = STRAY_KEY_HOMES.get(key)
+        diagnosis.findings.append(Finding(
+            "stray_key", SERIOUS,
+            f"the plan sets '{key}', which is not part of a plan and was "
+            + (f"ignored; it belongs on {home}." if home else "ignored."),
+            fixed=False,
+        ))
 
 
 def _segment_lengths(timeline: Sequence[TimelineSegment]) -> List[float]:
@@ -346,6 +382,30 @@ def _check_text_length(plan: EditPlan, diagnosis: Diagnosis, treat: bool) -> Non
             overlay.text = " ".join(words[:4])
 
 
+# Synthesised narration is far slower than reading pace. This started at 2.6
+# words a second - roughly a person reading aloud in a hurry - and every check
+# built on it under-fired: measured against five real lines the model actually
+# delivered 1.14, 1.14, 1.29, 1.84 and 2.51 words a second, so the estimate was
+# short by about half and lines that "fitted" collided on screen.
+#
+# No single rate fits that range: it spans 2.2x, and it is not explained by the
+# voice's tempo (the two extremes are 5% apart in tempo) - it is the model's own
+# prosody on the line. So the constant is chosen to err SLOW, because the two
+# errors are not equal. Estimating short runs lines into each other, which
+# ruins the take; estimating long spaces them a little further apart than they
+# needed, which nobody notices.
+WORDS_PER_SECOND = 1.1
+MIN_SPOKEN_SECONDS = 1.2
+# A line does not begin the instant the one before it stops.
+BREATH_SECONDS = 0.25
+
+
+def spoken_seconds(text: str) -> float:
+    """How long a line will take to say, before it has been synthesised."""
+    words = len([word for word in (text or "").split() if word.strip()])
+    return max(MIN_SPOKEN_SECONDS, words / WORDS_PER_SECOND)
+
+
 def _check_voice_timing(plan: EditPlan, diagnosis: Diagnosis, treat: bool) -> None:
     """Voice lines go in the gaps between hits, and never over each other."""
     lines = plan.audio.timed_lines
@@ -364,8 +424,7 @@ def _check_voice_timing(plan: EditPlan, diagnosis: Diagnosis, treat: bool) -> No
     previous_end = 0.0
     for position, line in enumerate(ordered):
         start = line.start_seconds
-        # A rough duration: reading pace is about 2.6 words a second.
-        spoken = max(1.2, len(line.text.split()) / 2.6)
+        spoken = spoken_seconds(line.text)
 
         if start < previous_end - 0.05:
             diagnosis.findings.append(Finding(
@@ -375,7 +434,7 @@ def _check_voice_timing(plan: EditPlan, diagnosis: Diagnosis, treat: bool) -> No
                 fixed=treat,
             ))
             if treat:
-                start = previous_end + 0.25
+                start = previous_end + BREATH_SECONDS
                 line.start_time = format_timecode(start)
 
         near = [hit for hit in boundaries if abs(hit - start) < 0.3 and hit < total - 0.1]

@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from puter_integration import ffmpeg_binary
-from vfx import chroma_key, composite_over
+from vfx import chroma_key, composite_over, depth_composite
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +313,7 @@ def ai_remove_background(
     model: str = "u2net_human_seg",
     min_coverage: float = 0.04,
     max_swing: float = 0.10,
+    depth: float = 0.0,
     ffmpeg: Optional[str] = None,
 ) -> Path:
     """Cut the subject out with ``rembg`` and put it over a new background.
@@ -326,6 +327,12 @@ def ai_remove_background(
     the cut-out edge for several frames and then jumps it, which on a moving
     subject reads as the character sliding inside their own outline. Crossing
     smoothly between them costs nothing and removes that entirely.
+
+    ``depth`` (0..1) trades a straight alpha-over for a lit one: a contact
+    shadow, a rim from the plate's own light, atmosphere in front of the
+    subject and a pull toward the plate's grade. It is what separates a
+    character standing *in* a scene from a sticker on top of it, and it costs
+    a few milliseconds a frame. 0 keeps the plain composite.
     """
     keys, _fps, _total = _matte_keyframes(Path(source), mask_fps, matte_width, model)
     if not keys:
@@ -373,11 +380,20 @@ def ai_remove_background(
     state = {"index": 0}
     backdrop = _BackgroundSource(background, fill)
 
+    strength = float(min(max(depth, 0.0), 1.0))
+
     def process(frame: np.ndarray, at: float) -> np.ndarray:
         mask = alpha_at(state["index"], frame.shape[:2])
         state["index"] += 1
         rgba = np.dstack([frame, mask])
-        return composite_over(rgba, backdrop.frame_at(at, frame.shape))
+        plate = backdrop.frame_at(at, frame.shape)
+        if strength <= 0.001:
+            return composite_over(rgba, plate)
+        return depth_composite(
+            rgba, plate,
+            shadow=0.55 * strength, rim=0.45 * strength,
+            haze=0.22 * strength, colour_match=0.35 * strength,
+        )
 
     try:
         return _process_frames(source, destination, process, ffmpeg=ffmpeg)

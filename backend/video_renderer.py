@@ -272,6 +272,12 @@ class CaptionWord:
     text: str
     start: float
     end: float
+    # Which spoken line this word belongs to. Captions are shown a few words
+    # at a time, and a band that runs the end of one line into the start of
+    # the next reads as one sentence that was never said - "NAHI SAKTE. APNI"
+    # is the tail of one line and the head of another. Phrases never cross a
+    # group.
+    group: int = 0
 
 
 def transcribe_words(audio_path: Path, language: Optional[str] = None) -> List[CaptionWord]:
@@ -297,6 +303,9 @@ def transcribe_words(audio_path: Path, language: Optional[str] = None) -> List[C
             beam_size=5,
         )
         words: List[CaptionWord] = []
+        # Transcription has no line numbers, so sentences are the grouping the
+        # captions get: a phrase band must not run one sentence into the next.
+        group = 0
         for segment in segments:
             for word in getattr(segment, "words", None) or []:
                 text = (word.word or "").strip()
@@ -306,7 +315,11 @@ def transcribe_words(audio_path: Path, language: Optional[str] = None) -> List[C
                 end = float(word.end or start + 0.25)
                 if end <= start:
                     end = start + 0.2
-                words.append(CaptionWord(text=text, start=start, end=end))
+                if words and start - words[-1].end > 0.6:
+                    group += 1
+                words.append(CaptionWord(text=text, start=start, end=end, group=group))
+                if text[-1] in ".!?":
+                    group += 1
         logger.info("Faster-Whisper produced %s caption words", len(words))
         return words
     except Exception as exc:
@@ -1618,6 +1631,14 @@ class VideoRenderer:
 
         Timing is shared out across each line's measured audio in proportion to
         word length, which tracks speaking time closely enough at this scale.
+
+        A line is also never allowed to still be on screen when the next one
+        starts. The planner only ever has an estimate of how long a line takes;
+        here the audio has been synthesised and the real length is known, so
+        two lines that were planned as consecutive and turned out to overlap
+        get caught at the last place that can still do anything about it -
+        otherwise the words of both are drawn on top of each other and neither
+        is readable.
         """
         lines = self.plan.audio.timed_lines
         if not lines:
@@ -1626,8 +1647,10 @@ class VideoRenderer:
         if not lines or len(lines) != len(voiceover):
             return []
 
+        starts = [max(0.0, start + self._intro_offset) for _path, start, _gain in voiceover]
+
         words: List[CaptionWord] = []
-        for (path, start, _gain), line in zip(voiceover, lines):
+        for index, ((path, _start, _gain), line) in enumerate(zip(voiceover, lines)):
             spoken = [word for word in line.text.split() if word.strip()]
             if not spoken or not Path(path).exists():
                 continue
@@ -1639,12 +1662,22 @@ class VideoRenderer:
             if length <= 0:
                 continue
 
-            at = max(0.0, start + self._intro_offset)
+            at = starts[index]
+            room = length
+            following = next((value for value in starts[index + 1:] if value > at), None)
+            if following is not None and at + length > following:
+                self.warn(
+                    f"Voice line {index + 1} runs {at + length - following:.1f}s into "
+                    f"line {index + 2}; its captions were cut short so the two do "
+                    f"not overlap on screen."
+                )
+                room = max(following - at, 0.25)
+
             weights = [len(word) + 1 for word in spoken]
             total = float(sum(weights))
             for word, weight in zip(spoken, weights):
-                span = length * (weight / total)
-                words.append(CaptionWord(word, at, at + span))
+                span = room * (weight / total)
+                words.append(CaptionWord(word, at, at + span, group=index))
                 at += span
         return words
 
@@ -1816,8 +1849,16 @@ class VideoRenderer:
         layers: List[Any] = []
 
         usable = [word for word in words if word.text.strip()]
-        for offset in range(0, len(usable), per_phrase):
-            phrase = usable[offset:offset + per_phrase]
+        phrases: List[List[Any]] = []
+        for word in usable:
+            same_line = phrases and getattr(word, "group", 0) == getattr(
+                phrases[-1][0], "group", 0)
+            if same_line and len(phrases[-1]) < per_phrase:
+                phrases[-1].append(word)
+            else:
+                phrases.append([word])
+
+        for phrase in phrases:
             texts = [word.text.strip().upper() for word in phrase]
             phrase_start = max(0.0, float(phrase[0].start))
             if phrase_start >= duration:
