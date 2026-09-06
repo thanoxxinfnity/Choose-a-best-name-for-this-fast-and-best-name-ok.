@@ -13,11 +13,16 @@ generating the clip.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Type
+
+import requests
+
+from puter_integration import _to_data_uri
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +213,198 @@ class PuterVideoProvider(VideoProvider):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# VideoForge - a self-hosted Z.ai endpoint
+# ---------------------------------------------------------------------------
+
+
+class VideoForgeProvider(VideoProvider):
+    """A keyless Z.ai (Zhipu) video endpoint that queues and paces work.
+
+    It is the opposite trade to Puter: nothing is billed per clip, but nothing
+    is instant either. Acceptance is unlimited, throughput is not - the service
+    guarantees ten requests a minute and renders two at a time, so a batch of
+    keyframe animations has to be spaced out rather than fired at once.
+
+    Submission is asynchronous even though the API offers ``?wait=true``. A
+    synchronous call holds one connection open for the whole render, and long
+    held connections are exactly what fails through a proxy; polling a task id
+    survives that.
+    """
+
+    key = "videoforge"
+    label = "VideoForge (Z.ai)"
+    supports_text_to_video = True
+    supports_image_to_video = True
+    requires_key = False
+
+    # Shared across instances: the rate limit belongs to the service, not to
+    # whichever object happens to be making this call.
+    _last_submit = 0.0
+    _submit_lock = threading.Lock()
+
+    def models(self) -> List[str]:
+        return ["z-ai/text2video", "z-ai/image2video"]
+
+    def notes(self) -> str:
+        from config import settings
+
+        return (
+            f"No key and no per-clip cost; paced at about "
+            f"{settings.videoforge_rpm} requests a minute with two renders in "
+            f"flight, so a batch is spaced out rather than queued all at once."
+        )
+
+    # -- plumbing ------------------------------------------------------------
+    def _base(self) -> str:
+        from config import settings
+
+        return str(self.options.get("base_url") or settings.videoforge_base_url).rstrip("/")
+
+    def _pace(self) -> None:
+        """Hold each submission back so a burst cannot trip the limit."""
+        from config import settings
+
+        gap = 60.0 / max(int(settings.videoforge_rpm), 1)
+        with VideoForgeProvider._submit_lock:
+            wait = gap - (time.time() - VideoForgeProvider._last_submit)
+            if wait > 0:
+                time.sleep(wait)
+            VideoForgeProvider._last_submit = time.time()
+
+    def _submit(self, payload: Dict[str, object]) -> str:
+        from config import settings
+
+        self._pace()
+        response = requests.post(
+            f"{self._base()}/api/v1/generate", json=payload,
+            timeout=min(120, settings.videoforge_timeout),
+        )
+        if response.status_code >= 400:
+            raise ProviderError(
+                f"VideoForge rejected the request: HTTP {response.status_code} "
+                f"{response.text[:200]}"
+            )
+        body = response.json()
+        task_id = str(
+            body.get("task_id")
+            or body.get("id")
+            or (body.get("data") or {}).get("id", "")
+        ).strip()
+        if not task_id:
+            raise ProviderError(f"VideoForge returned no task id: {response.text[:200]}")
+        return task_id
+
+    def _await(self, task_id: str, report: Callable[[str, float], None]) -> None:
+        from config import settings
+
+        deadline = time.time() + settings.videoforge_timeout
+        seen = ""
+        while time.time() < deadline:
+            time.sleep(settings.videoforge_poll_seconds)
+            response = requests.get(f"{self._base()}/api/v1/tasks/{task_id}", timeout=60)
+            if response.status_code >= 400:
+                raise ProviderError(
+                    f"VideoForge task {task_id}: HTTP {response.status_code}"
+                )
+            node = response.json()
+            node = node.get("data", node) if isinstance(node, dict) else {}
+            status = str(node.get("status") or "").upper()
+            if status != seen:
+                seen = status
+                elapsed = settings.videoforge_timeout - (deadline - time.time())
+                report(f"{status.lower() or 'working'} ({elapsed:.0f}s)",
+                       0.25 if status == "QUEUED" else 0.6)
+            if status == "SUCCESS":
+                return
+            if status in ("FAIL", "FAILED", "ERROR"):
+                raise ProviderError(
+                    f"VideoForge failed: {node.get('error') or node.get('message') or status}"
+                )
+        raise ProviderError(
+            f"VideoForge task {task_id} did not finish within "
+            f"{settings.videoforge_timeout}s."
+        )
+
+    def _download(self, task_id: str, output_path: Path) -> None:
+        from config import settings
+
+        # The task's video_url points at a CDN whose links expire; the service
+        # keeps this route working after they do, so it is the one to use.
+        response = requests.get(
+            f"{self._base()}/api/v1/file/{task_id}", timeout=settings.videoforge_timeout
+        )
+        if response.status_code >= 400 or len(response.content) < 1024:
+            raise ProviderError(
+                f"VideoForge produced no file for {task_id}: "
+                f"HTTP {response.status_code}, {len(response.content)} bytes"
+            )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(response.content)
+
+    def _run(self, payload: Dict[str, object], output_path: Path, seconds: float,
+             prompt: str, model: str, on_progress) -> GenerationResult:
+        started = time.time()
+        report = self._reporter(on_progress, started)
+        report("submitting", 0.05)
+        task_id = self._submit(payload)
+        self._await(task_id, report)
+        report("downloading", 0.9)
+        self._download(task_id, Path(output_path))
+        report("done", 1.0)
+        return GenerationResult(
+            path=Path(output_path), provider=self.key, model=model,
+            seconds=seconds, prompt=prompt, elapsed=time.time() - started,
+        )
+
+    # The service takes two clip lengths and rejects anything else outright,
+    # so a 4-second request has to become a 5-second one here rather than a
+    # 400 at submit time.
+    ALLOWED_SECONDS = (5, 10)
+
+    @classmethod
+    def _clamp_seconds(cls, seconds: float) -> int:
+        return min(cls.ALLOWED_SECONDS, key=lambda option: abs(option - float(seconds)))
+
+    # -- API -----------------------------------------------------------------
+    def text_to_video(
+        self, prompt, output_path, seconds=5.0, resolution="720x1280",
+        on_progress=None, **kwargs,
+    ) -> GenerationResult:
+        width, height = _parse_resolution(resolution)
+        seconds = self._clamp_seconds(seconds)
+        payload = {
+            "prompt": prompt,
+            "duration": seconds,
+            "size": f"{width}x{height}",
+            "fps": int(kwargs.get("fps") or 30),
+            "quality": str(kwargs.get("quality") or "high"),
+            "with_audio": bool(kwargs.get("with_audio", False)),
+            "watermark": False,
+            "client": "moja-ai",
+        }
+        return self._run(payload, output_path, seconds, prompt,
+                         "z-ai/text2video", on_progress)
+
+    def image_to_video(
+        self, image_path, prompt, output_path, seconds=5.0, motion_strength=0.7,
+        on_progress=None, **kwargs,
+    ) -> GenerationResult:
+        seconds = self._clamp_seconds(seconds)
+        payload = {
+            "image_url": _to_data_uri(Path(image_path)),
+            "prompt": prompt,
+            "duration": seconds,
+            "fps": int(kwargs.get("fps") or 30),
+            "quality": str(kwargs.get("quality") or "high"),
+            "with_audio": bool(kwargs.get("with_audio", False)),
+            "watermark": False,
+            "client": "moja-ai",
+        }
+        return self._run(payload, output_path, seconds, prompt,
+                         "z-ai/image2video", on_progress)
+
+
 class LocalMotionProvider(VideoProvider):
     """Ken Burns style motion from a still - not AI, but never a dead button.
 
@@ -287,9 +484,12 @@ def register_provider(provider: Type[VideoProvider]) -> Type[VideoProvider]:
 
 
 register_provider(PuterVideoProvider)
+register_provider(VideoForgeProvider)
 register_provider(LocalMotionProvider)
 
-DEFAULT_PROVIDER = PuterVideoProvider.key
+# VideoForge first: it needs no key and bills nothing, so it is the one
+# that works out of the box.
+DEFAULT_PROVIDER = VideoForgeProvider.key
 
 
 def provider_keys() -> List[str]:

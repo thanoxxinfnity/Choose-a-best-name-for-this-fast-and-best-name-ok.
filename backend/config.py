@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     puter_video_method: str = "generate"
     puter_video_status_method: str = "status"
     puter_video_timeout: int = 900
+    # ------------------------------------------------------- videoforge --
+    # A self-hosted Z.ai (Zhipu) video endpoint. No key, no credits; paced
+    # instead - it guarantees 10+ RPM and renders two at a time.
+    videoforge_base_url: str = "https://w1zjp7xgayf0-d.space-z.ai"
+    videoforge_rpm: int = 10
+    videoforge_timeout: int = 900
+    videoforge_poll_seconds: float = 4.0
+
     puter_t2v_model: str = "sora-2"
     puter_i2v_model: str = "sora-2"
 
