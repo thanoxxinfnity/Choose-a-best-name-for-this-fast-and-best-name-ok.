@@ -127,3 +127,87 @@ def test_after_the_last_key_the_last_matte_is_used():
 def test_the_matte_is_upscaled_to_the_frame():
     keys = [(0, _mask(128, 8)), (10, _mask(128, 8))]
     assert _alpha_lookup(keys)(5, (64, 48)).shape == (64, 48)
+
+
+# ------------------------------------------------------- refusing to guess --
+
+def _keys(*coverages, size=20):
+    """Key masks whose opaque share matches each given fraction."""
+    out = []
+    for index, cover in enumerate(coverages):
+        mask = np.zeros((size, size), np.uint8)
+        rows = int(round(size * cover))
+        if rows:
+            mask[:rows] = 255
+        out.append((index * 6, mask))
+    return out
+
+
+def test_a_steady_subject_reads_as_confident():
+    from enhancers import matte_confidence
+
+    coverage, swing = matte_confidence(_keys(0.30, 0.32, 0.29, 0.31))
+    assert coverage == pytest.approx(0.30, abs=0.03)
+    assert swing < 0.05
+
+
+def test_a_subject_that_keeps_vanishing_reads_as_unstable():
+    """What shredded output looks like before it is rendered: half the frame
+    one sample, nothing the next."""
+    from enhancers import matte_confidence
+
+    _coverage, swing = matte_confidence(_keys(0.35, 0.0, 0.30, 0.0))
+    assert swing > 0.2
+
+
+def test_finding_almost_nothing_reads_as_no_subject():
+    from enhancers import matte_confidence
+
+    coverage, _swing = matte_confidence(_keys(0.01, 0.0, 0.01, 0.0))
+    assert coverage < 0.02
+
+
+def test_no_keys_is_the_least_confident_answer():
+    from enhancers import matte_confidence
+
+    assert matte_confidence([]) == (0.0, 1.0)
+
+
+def test_a_single_key_has_nothing_to_swing_against():
+    from enhancers import matte_confidence
+
+    coverage, swing = matte_confidence(_keys(0.4))
+    assert coverage == pytest.approx(0.4, abs=0.03)
+    assert swing == 0.0
+
+
+def test_an_unstable_matte_refuses_rather_than_shipping_a_shredded_subject(monkeypatch):
+    """Every model tried on an already-composited edit returned a different
+    answer on every frame; compositing that produces a torn character."""
+    import enhancers
+    from enhancers import MatteTooUnstable, ai_remove_background
+
+    monkeypatch.setattr(
+        enhancers, "_matte_keyframes",
+        lambda *a, **k: (_keys(0.35, 0.0, 0.30, 0.0), 30.0, 120),
+    )
+    with pytest.raises(MatteTooUnstable, match="could not be tracked"):
+        ai_remove_background(Path("in.mp4"), Path("out.mp4"))
+
+
+def test_a_confident_matte_is_allowed_through(monkeypatch, tmp_path):
+    import enhancers
+    from enhancers import ai_remove_background
+
+    monkeypatch.setattr(
+        enhancers, "_matte_keyframes",
+        lambda *a, **k: (_keys(0.30, 0.31, 0.30, 0.29), 30.0, 120),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        enhancers, "_process_frames",
+        lambda source, destination, process, ffmpeg=None: seen.setdefault("ran", True)
+        or destination,
+    )
+    ai_remove_background(Path("in.mp4"), tmp_path / "out.mp4")
+    assert seen.get("ran") is True

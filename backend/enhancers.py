@@ -30,6 +30,10 @@ from vfx import chroma_key, composite_over
 logger = logging.getLogger(__name__)
 
 
+class MatteTooUnstable(RuntimeError):
+    """The segmenter could not find a consistent subject to cut out."""
+
+
 # ---------------------------------------------------------------------------
 # Audio enhancer
 # ---------------------------------------------------------------------------
@@ -201,10 +205,28 @@ def chroma_key_video(
     )
 
 
+def matte_confidence(keys: Sequence[Tuple[int, np.ndarray]]) -> Tuple[float, float]:
+    """How much of the frame the subject covers, and how much that wobbles.
+
+    Returns ``(mean coverage, mean absolute change between keys)``, both 0..1.
+    A segmenter that has found a subject reports a steady share of the frame;
+    one that has not swings between finding half the picture and finding
+    nothing, which is what shredded output looks like before it is rendered.
+    """
+    if not keys:
+        return 0.0, 1.0
+    covers = [float((mask > 127).mean()) for _index, mask in keys]
+    if len(covers) < 2:
+        return covers[0], 0.0
+    swing = float(np.mean([abs(b - a) for a, b in zip(covers, covers[1:])]))
+    return float(np.mean(covers)), swing
+
+
 def _matte_keyframes(
     source: Path,
     mask_fps: float,
     matte_width: int,
+    model: str = "u2net_human_seg",
 ) -> Tuple[List[Tuple[int, np.ndarray]], float, int]:
     """Segment the subject at intervals, at reduced resolution.
 
@@ -222,7 +244,7 @@ def _matte_keyframes(
     from PIL import Image
     from rembg import new_session, remove
 
-    session = new_session("u2net_human_seg")
+    session = new_session(model)
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
         raise RuntimeError(f"Cannot open {source}")
@@ -288,6 +310,9 @@ def ai_remove_background(
     fill: Tuple[int, int, int] = (0, 0, 0),
     mask_fps: float = 6.0,
     matte_width: int = 320,
+    model: str = "u2net_human_seg",
+    min_coverage: float = 0.04,
+    max_swing: float = 0.10,
     ffmpeg: Optional[str] = None,
 ) -> Path:
     """Cut the subject out with ``rembg`` and put it over a new background.
@@ -302,9 +327,25 @@ def ai_remove_background(
     subject reads as the character sliding inside their own outline. Crossing
     smoothly between them costs nothing and removes that entirely.
     """
-    keys, _fps, _total = _matte_keyframes(Path(source), mask_fps, matte_width)
+    keys, _fps, _total = _matte_keyframes(Path(source), mask_fps, matte_width, model)
     if not keys:
         raise RuntimeError(f"Could not segment any frame of {source}")
+
+    # Refuse rather than ship a shredded character. Every model tried on an
+    # already-composited edit - one where the subject is buried under glitch,
+    # energy and flash passes - returned a different answer on every frame and
+    # nothing at all on some of them. That is not a matte to composite over a
+    # new background; it needs raw footage with a subject that can be found.
+    coverage, swing = matte_confidence(keys)
+    if coverage < min_coverage or swing > max_swing:
+        raise MatteTooUnstable(
+            f"the subject could not be tracked in {Path(source).name}: it covers "
+            f"{coverage * 100:.0f}% of the frame on average and swings by "
+            f"{swing * 100:.0f}% between samples. Background removal needs footage "
+            f"with a clear subject - an already-edited clip, where the character "
+            f"sits under effects passes, has no boundary to find."
+        )
+
     keys = _smooth_masks(keys)
     indices = [index for index, _mask in keys]
 
