@@ -100,13 +100,25 @@ class Diagnosis:
 # ---------------------------------------------------------------------------
 
 
+# How dark a frame has to be before it counts as nothing on screen. Measured
+# as mean luma 0..1; a graded night shot still sits well above this.
+DARK_FRAME_LUMA = 0.045
+
+
 def diagnose(
     plan: EditPlan,
     clip_durations: Sequence[float] = (),
     theme: Optional[Any] = None,
     treat: bool = True,
+    frame_probe: Optional[Any] = None,
 ) -> Diagnosis:
-    """Read the plan back and report - and by default repair - what is wrong."""
+    """Read the plan back and report - and by default repair - what is wrong.
+
+    ``frame_probe`` is ``(source_index, seconds) -> mean luma 0..1`` when the
+    caller can read the footage. Every other check here reasons about the
+    timeline alone; blackness is a property of the pixels, so without a probe
+    that one check simply does not run rather than guessing.
+    """
     diagnosis = Diagnosis()
     timeline = plan.edit_timeline
     if not timeline:
@@ -123,6 +135,7 @@ def diagnose(
     _check_text_length(plan, diagnosis, treat)
     _check_voice_timing(plan, diagnosis, treat)
     _check_the_ending(plan, diagnosis, treat)
+    _check_dark_edges(plan, frame_probe, diagnosis, treat)
     return diagnosis
 
 
@@ -408,6 +421,67 @@ def _check_the_ending(plan: EditPlan, diagnosis: Diagnosis, treat: bool) -> None
         segment.end_time = format_timecode(segment.start_seconds + 1.1 * speed)
 
 
+def _check_dark_edges(
+    plan: EditPlan, frame_probe: Optional[Any], diagnosis: Diagnosis, treat: bool
+) -> None:
+    """An edit must not open or close on a frame with nothing on it.
+
+    The first frame is the whole hook and the last is the only one that stays
+    with the viewer, so a fade-to-black tail or a black leader at the head
+    spends both of them on nothing. Neither is visible in the timeline - the
+    segment lengths look perfectly reasonable - which is why this needs the
+    footage rather than the plan.
+
+    Repaired by walking inward for a frame with something in it, never by
+    extending the segment: the footage past the end may not exist.
+    """
+    if frame_probe is None or not plan.edit_timeline:
+        return
+
+    def luma(segment: TimelineSegment, at: float) -> Optional[float]:
+        try:
+            value = frame_probe(segment.source_index or 0, at)
+        except Exception:
+            return None
+        return None if value is None else float(value)
+
+    for label, index in (("opens", 0), ("ends", len(plan.edit_timeline) - 1)):
+        segment = plan.edit_timeline[index]
+        start, end = segment.start_seconds, segment.end_seconds
+        if end - start <= 0.2:
+            continue
+        edge = start if label == "opens" else max(start, end - 0.05)
+        value = luma(segment, edge)
+        if value is None or value > DARK_FRAME_LUMA:
+            continue
+
+        diagnosis.findings.append(Finding(
+            "dark_edge", SERIOUS,
+            f"the edit {label} on a black frame (luma {value:.3f}); that is the "
+            f"{'hook' if label == 'opens' else 'last thing the viewer sees'} "
+            f"spent on nothing.",
+            where=index, fixed=False,
+        ))
+        if not treat:
+            continue
+
+        # Step inward looking for a frame with something in it.
+        span = end - start
+        step = max(0.08, span / 12.0)
+        offset = step
+        while offset < span - 0.15:
+            probe_at = start + offset if label == "opens" else end - offset
+            found = luma(segment, probe_at)
+            if found is not None and found > DARK_FRAME_LUMA:
+                if label == "opens":
+                    segment.start_time = format_timecode(probe_at)
+                else:
+                    segment.end_time = format_timecode(probe_at)
+                diagnosis.findings[-1].fixed = True
+                break
+            offset += step
+
+
 # ---------------------------------------------------------------------------
 # Entry point used by the pipeline
 # ---------------------------------------------------------------------------
@@ -417,9 +491,11 @@ def review(
     plan: EditPlan,
     clip_durations: Sequence[float] = (),
     theme: Optional[Any] = None,
+    frame_probe: Optional[Any] = None,
 ) -> Tuple[EditPlan, Diagnosis]:
     """Read the plan back, repair it in place, and report what was found."""
-    diagnosis = diagnose(plan, clip_durations, theme, treat=True)
+    diagnosis = diagnose(plan, clip_durations, theme, treat=True,
+                         frame_probe=frame_probe)
     if diagnosis.findings:
         logger.info(
             "plan doctor: %d finding(s), %d repaired",

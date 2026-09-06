@@ -391,3 +391,76 @@ def test_without_a_key_the_revision_is_simply_skipped():
         _plan(1.0, 2.0), "[REVIEW] fix it", _clips()
     )
     assert revised is None and warnings == []
+
+
+# ------------------------------------------------- black opens and endings --
+
+def _probe(dark_spans):
+    """A stand-in for reading the footage: dark inside the given spans."""
+    def probe(_source_index, seconds):
+        for low, high in dark_spans:
+            if low <= seconds <= high:
+                return 0.01
+        return 0.4
+    return probe
+
+
+def test_an_edit_ending_on_black_is_caught_and_pulled_back():
+    """The last frame is the only one that stays with the viewer."""
+    plan = _plan(2.0, 2.0, 3.0)
+    # The final segment runs 4-7s and the footage goes black at 6s.
+    _, diagnosis = review(plan, frame_probe=_probe([(6.0, 99.0)]))
+
+    finding = next(f for f in diagnosis.findings if f.rule == "dark_edge")
+    assert finding.fixed is True
+    assert plan.edit_timeline[-1].end_seconds < 7.0
+
+
+def test_an_edit_opening_on_black_is_caught():
+    """Frame one is the whole hook; spending it on nothing wastes the edit."""
+    plan = _plan(3.0, 2.0, 2.0)
+    _, diagnosis = review(plan, frame_probe=_probe([(0.0, 1.0)]))
+
+    finding = next(f for f in diagnosis.findings if f.rule == "dark_edge")
+    assert finding.fixed is True
+    assert plan.edit_timeline[0].start_seconds > 0.0
+
+
+def test_footage_that_is_never_black_raises_nothing():
+    plan = _plan(2.0, 2.0, 2.0)
+    _, diagnosis = review(plan, frame_probe=_probe([]))
+    assert not any(f.rule == "dark_edge" for f in diagnosis.findings)
+
+
+def test_a_dark_segment_with_no_lit_frame_is_reported_not_guessed_at():
+    """Trimming into more blackness would not help, and the footage past the
+    end may not exist, so it says so instead of inventing a fix."""
+    plan = _plan(2.0, 2.0, 2.0)
+    _, diagnosis = review(plan, frame_probe=_probe([(0.0, 99.0)]))
+
+    dark = [f for f in diagnosis.findings if f.rule == "dark_edge"]
+    assert dark and all(f.fixed is False for f in dark)
+
+
+def test_a_graded_night_shot_is_not_mistaken_for_black():
+    """Dark footage is a style; an empty frame is a fault."""
+    plan = _plan(2.0, 2.0, 2.0)
+    _, diagnosis = review(plan, frame_probe=lambda *_: 0.08)
+    assert not any(f.rule == "dark_edge" for f in diagnosis.findings)
+
+
+def test_without_a_probe_the_check_does_not_run():
+    """Every other check reads the timeline; this one needs the pixels, and
+    without them it makes no claim."""
+    plan = _plan(2.0, 2.0, 2.0)
+    _, diagnosis = review(plan)
+    assert not any(f.rule == "dark_edge" for f in diagnosis.findings)
+
+
+def test_a_probe_that_fails_is_survived():
+    def broken(*_args):
+        raise RuntimeError("no such frame")
+
+    plan = _plan(2.0, 2.0, 2.0)
+    _, diagnosis = review(plan, frame_probe=broken)
+    assert not any(f.rule == "dark_edge" for f in diagnosis.findings)

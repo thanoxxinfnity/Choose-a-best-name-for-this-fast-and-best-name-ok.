@@ -19,11 +19,13 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from ae_style import apply_velocity_ramps, is_velocity_theme, promote_hook
 from highlights import MIN_SEARCHABLE, find_highlights
 from plan_doctor import review as review_plan
+import cv2
+
 from config import settings
 from orchestrator import KimiOrchestrator, fetch_youtube_reference
 from export_presets import check_source_headroom, describe_cost, resolve_preset
@@ -96,6 +98,35 @@ class JobRequest:
     max_inpaints: int = 2
     plan_override: Optional[EditPlan] = None
     extra: Dict[str, str] = field(default_factory=dict)
+
+
+def _frame_luma_probe(clip_paths: Sequence[Path]):
+    """Give the plan doctor a way to look at the footage.
+
+    It reasons about the timeline everywhere else, which is the right default -
+    but a black frame is invisible in a timeline, so that one check needs the
+    pixels. Captures are opened once each and kept, because seeking a file that
+    is reopened per probe costs more than the whole review.
+    """
+    handles: Dict[int, Any] = {}
+
+    def probe(source_index: int, seconds: float) -> Optional[float]:
+        path = clip_paths[source_index] if 0 <= source_index < len(clip_paths) else None
+        if path is None:
+            return None
+        capture = handles.get(source_index)
+        if capture is None:
+            capture = cv2.VideoCapture(str(path))
+            if not capture.isOpened():
+                return None
+            handles[source_index] = capture
+        capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, seconds) * 1000.0)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            return None
+        return float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()) / 255.0
+
+    return probe
 
 
 def _cut_window(source: Path, destination: Path, start: float, end: float) -> bool:
@@ -469,7 +500,10 @@ class JobManager:
             # what a language model is bad at and a measurement is good at.
             if request.review_plan:
                 clip_durations = [max(clip.duration, 0.0) for clip in status.clips]
-                plan, diagnosis = review_plan(plan, clip_durations, theme)
+                plan, diagnosis = review_plan(
+                    plan, clip_durations, theme,
+                    frame_probe=_frame_luma_probe(request.clip_paths),
+                )
                 if diagnosis.findings:
                     self._update(
                         job_id,
