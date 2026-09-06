@@ -541,7 +541,12 @@ def analyse_video(
     analysis.speech_ratio = audio.get("speech_ratio", 0.0)
 
     if not use_vision or not nim_api_key:
-        analysis.vision_error = "vision pass skipped (no NVIDIA NIM key)"
+        # Two different reasons, and blaming a missing key for a deliberate
+        # skip sends whoever reads the warnings looking for a settings bug.
+        analysis.vision_error = (
+            "vision pass skipped (no NVIDIA NIM key)" if not nim_api_key
+            else "vision pass not needed - the timeline was already written"
+        )
         _apply_local_fallback(analysis)
         return analysis
 
