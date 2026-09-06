@@ -141,17 +141,43 @@ def test_each_visible_toggle_is_bound_to_state_and_a_setter(state, setter):
     )
 
 
+def _routes_the_app_calls(source: str) -> set:
+    """Every /api/v1 path in the Kotlin source, as a route shape.
+
+    The app builds its URLs as templates - "${baseUrl(context)}/api/v1/jobs/$job"
+    - so a path never starts at a quote, and the old pattern that required one
+    matched nothing at all. Kotlin interpolations become the path parameter
+    they stand for, so /api/v1/jobs/$job lines up with /api/v1/jobs/{job_id}.
+    """
+    found = set()
+    for raw in re.findall(r"(/api/v1/[A-Za-z0-9/\-_$.{}]+)", source):
+        # ${item.id} and $job are both one path segment with a value in it.
+        shaped = re.sub(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_.]*", "{}", raw)
+        found.add(shaped.rstrip("/"))
+    return found
+
+
+def test_the_route_scan_can_actually_fail():
+    """The check above passed for months while matching nothing.
+
+    A guard that cannot fail is worse than no guard, so this pins the scanner
+    itself: it must find a real call, and must not find one that is absent.
+    """
+    calls = _routes_the_app_calls(_android_source())
+    assert "/api/v1/render" in calls
+    assert "/api/v1/voices" in calls
+    assert "/api/v1/jobs/{}" in calls, "an interpolated path must still be seen"
+    assert "/api/v1/nonsense" not in calls
+
+
 def test_every_endpoint_the_app_calls_exists():
     """A client calling a route the server does not serve fails only at runtime."""
-    served = {getattr(route, "path", "") for route in main.app.routes}
-    source = _android_source() + (ANDROID / "GalleryViewModel.kt").read_text(encoding="utf-8")
+    served = set()
+    for route in main.app.routes:
+        path = getattr(route, "path", "")
+        if path.startswith("/api/v1"):
+            served.add(re.sub(r"\{[^}]*\}", "{}", path).rstrip("/"))
 
-    called = set(re.findall(r'"(/api/v1/[a-z0-9/\-_]+)"', source))
-    missing = {
-        path for path in called
-        if path not in served and not any(
-            served_path.split("{")[0] == path.rsplit("/", 1)[0] + "/"
-            for served_path in served
-        )
-    }
-    assert not missing, f"the app calls routes the API does not serve: {sorted(missing)}"
+    source = _android_source() + (ANDROID / "GalleryViewModel.kt").read_text(encoding="utf-8")
+    missing = sorted(_routes_the_app_calls(source) - served)
+    assert not missing, f"the app calls routes the API does not serve: {missing}"

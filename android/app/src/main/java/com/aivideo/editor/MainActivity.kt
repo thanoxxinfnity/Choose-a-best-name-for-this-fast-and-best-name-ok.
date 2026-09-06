@@ -403,18 +403,34 @@ fun EditorScreen(
                                 selected = state.voiceAccent == voice.key,
                                 onClick = { viewModel.setVoiceAccent(voice.key) },
                                 label = { Text(voice.label) },
-                                leadingIcon = if (voice.deep) {
-                                    { Text("\uD83C\uDF11") }
-                                } else null,
+                                leadingIcon = when {
+                                    voice.cloned -> { { Text("\uD83E\uDDEC") } }
+                                    voice.deep -> { { Text("\uD83C\uDF11") } }
+                                    else -> null
+                                },
                             )
                         }
                     }
                     state.voices.firstOrNull { it.key == state.voiceAccent }?.let { voice ->
+                        // A cloned voice has no stock voice id to name. Printing
+                        // the empty one left a dangling dash where the speaker
+                        // should be, which reads as a bug rather than as a clone.
                         Text(
-                            "${voice.label} - ${voice.voiceId} (${voice.language})",
+                            if (voice.cloned) {
+                                "${voice.label} - cloned from your recording (${voice.language})"
+                            } else {
+                                "${voice.label} - ${voice.voiceId} (${voice.language})"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        voice.referenceNotes.forEach { note ->
+                            Text(
+                                "- $note",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                 }
 

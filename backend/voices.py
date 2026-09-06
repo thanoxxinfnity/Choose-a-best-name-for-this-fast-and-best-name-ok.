@@ -52,9 +52,22 @@ class VoiceProfile:
     growl: float = 0.0             # soft-clip drive: harmonics read as menace
     body_db: float = 0.0           # low-mid shelf, the chest of the voice
     presence_db: float = 0.0       # 3kHz lift so it stays legible under the sub
+    # --- cloning ----------------------------------------------------------
+    # A cloned voice does not pick a stock speaker and bend it. It carries a
+    # recording of the voice it wants to be, and Magpie synthesises new lines
+    # in that voice. The shaping knobs above still apply on top - the clone
+    # supplies the timbre, they supply the character.
+    clone_reference: str = ""      # prepared reference WAV; empty = stock voice
+    clone_language: str = ""       # what Magpie should speak, e.g. "hi-IN"
+    clone_quality: int = 20        # 1..40, similarity against synthesis speed
+
     # Shown next to the voice when what it is needs explaining - so a label
     # never promises something the synthesiser cannot deliver.
     note: str = ""
+
+    @property
+    def is_cloned(self) -> bool:
+        return bool(self.clone_reference)
 
     @property
     def needs_shaping(self) -> bool:
@@ -300,11 +313,74 @@ def save_pack(
     return profile
 
 
+def clone_dir() -> Path:
+    """Where prepared reference recordings live, next to the packs."""
+    path = settings.data_dir / "voice_clones"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_clone_pack(
+    key: str,
+    label: str,
+    reference: Path,
+    language: str = "en-US",
+    quality: int = 20,
+    note: str = "",
+    ffmpeg: Optional[str] = None,
+    **knobs: float,
+):
+    """Save a voice built from a recording rather than from a stock speaker.
+
+    The reference is copied into the app's own storage in the form the model
+    wants, because a pack that points at a file in someone's downloads folder
+    stops working the moment they tidy up.
+
+    Returns the profile and the report on the recording, which carries the
+    reasons a clone may come back disappointing - those belong in front of
+    whoever saved it, not in a log.
+    """
+    from magpie_tts import prepare_reference  # noqa: PLC0415
+
+    clean = re.sub(r"[^a-z0-9_]+", "_", (key or "").strip().lower()).strip("_")
+    if not clean:
+        raise ValueError("a voice pack needs a name")
+    if clean in VOICE_PROFILES:
+        raise ValueError(f"'{clean}' is a built-in voice; choose another name")
+
+    destination = clone_dir() / f"{clean}.wav"
+    report = prepare_reference(Path(reference), destination, ffmpeg=ffmpeg)
+
+    values: Dict[str, float] = {}
+    for field_name, (low, high) in PACK_LIMITS.items():
+        if field_name not in knobs or knobs[field_name] is None:
+            continue
+        value = min(max(float(knobs[field_name]), low), high)
+        values[field_name] = int(value) if field_name.endswith("_hz") else value
+
+    profile = VoiceProfile(
+        key=clean, label=(label or clean.replace("_", " ").title()),
+        voice_id="", language=language, engine="magpie",
+        clone_reference=str(destination), clone_language=language,
+        clone_quality=max(1, min(40, int(quality))),
+        note=note or "Cloned from a recording with Magpie TTS Zero-Shot.",
+        **values,
+    )
+    packs = load_packs()
+    packs[clean] = profile
+    _write_packs(packs)
+    return profile, report
+
+
 def delete_pack(key: str) -> bool:
     packs = load_packs()
     if key not in packs:
         return False
-    packs.pop(key)
+    gone = packs.pop(key)
+    if gone.clone_reference:
+        # The recording is the pack. Leaving it behind means a re-saved pack
+        # of the same name silently inherits the old voice.
+        Path(gone.clone_reference).unlink(missing_ok=True)
     _write_packs(packs)
     return True
 

@@ -38,6 +38,14 @@ faster-whisper==1.1.0
 # --- YouTube reference ingestion --------------------------------------------
 yt-dlp==2024.12.13
 
+# --- Voice cloning (NVIDIA Magpie TTS Zero-Shot) -----------------------------
+# Magpie is a Riva service reached over gRPC through NVIDIA Cloud Functions,
+# not an OpenAI-compatible REST endpoint, so it needs its own client. Installing
+# it pins protobuf below 7 - which is why the pin is written down here rather
+# than left to whatever pip resolves next time.
+nvidia-riva-client==2.27.0
+protobuf==6.33.5
+
 # --- Tests (optional) --------------------------------------------------------
 pytest==8.3.4
 

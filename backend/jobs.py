@@ -367,7 +367,10 @@ class JobManager:
             if status is None:
                 raise RenderError(f"Job {job_id} disappeared before it started.")
 
-            puter = PuterClient(api_key=request.credentials.resolved_puter_key())
+            puter = PuterClient(
+                api_key=request.credentials.resolved_puter_key(),
+                nim_api_key=nim_key,
+            )
 
             # ---------------------------------- 0. find the clip in the film
             # A two hour source is not footage to edit, it is footage to search.

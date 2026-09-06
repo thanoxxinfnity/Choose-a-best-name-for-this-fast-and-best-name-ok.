@@ -166,6 +166,17 @@ data class VoiceDto(
     @SerialName("voice_id") val voiceId: String = "",
     val language: String = "",
     val deep: Boolean = false,
+    val layered: Boolean = false,
+    val custom: Boolean = false,
+    /** Cloned from a recording rather than shaped out of a stock speaker. */
+    val cloned: Boolean = false,
+    val note: String = "",
+    /**
+     * What the reference recording turned out to be. A clone disappoints for
+     * reasons that are all knowable before it is used, so they are shown at
+     * the moment it is saved rather than guessed at afterwards.
+     */
+    @SerialName("reference_notes") val referenceNotes: List<String> = emptyList(),
 )
 
 @Serializable
@@ -563,6 +574,68 @@ object ApiClient {
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw IOException(errorMessage(response, body))
             json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(VoiceDto.serializer()), body)
+        }
+    }
+
+    /**
+     * Clones a voice from a recording on the device.
+     *
+     * The recording is the voice: unlike a shaping pack this does not pick a
+     * stock speaker, so the sample needs to be a few clean seconds of the
+     * person actually talking. The backend reports back what it found in it.
+     */
+    fun cloneVoice(
+        context: Context,
+        key: String,
+        label: String,
+        sample: Uri,
+        displayName: String,
+        language: String = "en-US",
+        quality: Int = 20,
+        pitchSemitones: Float? = null,
+        note: String = "",
+    ): Result<VoiceDto> = runCatching {
+        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            addFormDataPart("key", key.trim())
+            addFormDataPart("label", label.trim())
+            addFormDataPart("language", language)
+            addFormDataPart("quality", quality.toString())
+            if (note.isNotBlank()) addFormDataPart("note", note.trim())
+            pitchSemitones?.let { addFormDataPart("pitch_semitones", it.toString()) }
+            addFormDataPart(
+                "sample", displayName,
+                UriRequestBody(
+                    context = context,
+                    uri = sample,
+                    mediaType = "audio/mpeg".toMediaType(),
+                    declaredLength = -1L,
+                ) { },
+            )
+        }.build()
+
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/voices/clone")
+            .headers(authHeaders(context))
+            .post(multipart)
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException(errorMessage(response, body))
+            json.decodeFromString(VoiceDto.serializer(), body)
+        }
+    }
+
+    /** Removes a saved voice pack, and the recording behind a cloned one. */
+    fun deleteVoice(context: Context, key: String): Result<Unit> = runCatching {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/v1/voices/$key")
+            .headers(authHeaders(context))
+            .delete()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException(errorMessage(response, response.body?.string().orEmpty()))
+            }
         }
     }
 

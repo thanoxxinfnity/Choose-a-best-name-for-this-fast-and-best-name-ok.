@@ -464,7 +464,12 @@ class VoiceInfo(BaseModel):
     deep: bool = False
     layered: bool = False
     custom: bool = False
+    # Cloned from a recording rather than shaped out of a stock speaker.
+    cloned: bool = False
     note: str = ""
+    # What the reference recording turned out to be, for a cloned voice: the
+    # reasons a clone disappoints are all visible before it is ever used.
+    reference_notes: List[str] = Field(default_factory=list)
 
 
 class VideoProviderInfo(BaseModel):

@@ -40,7 +40,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -88,8 +88,12 @@ class PuterClient:
         timeout: Optional[int] = None,
         max_retries: int = 3,
         session: Optional[requests.Session] = None,
+        nim_api_key: Optional[str] = None,
     ) -> None:
         self.api_key = (api_key or settings.puter_api_key or "").strip()
+        # Cloned voices are synthesised by NVIDIA, not by Puter, so the client
+        # that serves a TTS request has to be able to reach both.
+        self.nim_api_key = (nim_api_key or "").strip()
         self.base_url = (base_url or settings.puter_base_url).rstrip("/")
         self.timeout = timeout or settings.puter_timeout
         self.max_retries = max(1, max_retries)
@@ -310,6 +314,9 @@ class PuterClient:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if profile.is_cloned:
+            return self._clone_to_speech(script, output_path, profile, speed)
+
         chunks = _chunk_text(script, TTS_CHUNK_CHARS)
         logger.info(
             "Puter TTS: %s chunk(s), profile=%s voice=%s (%s)",
@@ -352,6 +359,48 @@ class PuterClient:
                         audio_bitrate=settings.audio_bitrate)
 
         logger.info("Puter TTS written to %s (%s bytes)", output_path, output_path.stat().st_size)
+        return output_path
+
+    def _clone_to_speech(
+        self, script: str, output_path: Path, profile: VoiceProfile, speed: float
+    ) -> Path:
+        """Speak a line in a cloned voice, then shape it like any other.
+
+        Magpie supplies the timbre; the profile's knobs still decide the
+        character on top of it. Chunking is Puter's problem, not this one -
+        the model takes a whole line.
+        """
+        from magpie_tts import MagpieCloner, MagpieUnavailable  # noqa: PLC0415
+
+        reference = Path(profile.clone_reference)
+        if not reference.exists():
+            raise PuterError(
+                f"The recording behind voice '{profile.key}' is gone "
+                f"({reference}); re-save the pack from the original audio."
+            )
+        try:
+            cloner = MagpieCloner(self.nim_api_key)
+        except MagpieUnavailable as exc:
+            raise PuterError(f"Cloned voice '{profile.key}' unavailable: {exc}") from exc
+
+        logger.info(
+            "Magpie TTS: profile=%s language=%s quality=%s",
+            profile.key, profile.clone_language or profile.language,
+            profile.clone_quality,
+        )
+        with tempfile.TemporaryDirectory(prefix="magpie-tts-") as tmp:
+            raw = Path(tmp) / "raw.wav"
+            try:
+                cloner.synthesize(
+                    script, raw, reference,
+                    language=profile.clone_language or profile.language or "en-US",
+                    quality=profile.clone_quality,
+                )
+            except MagpieUnavailable as exc:
+                raise PuterError(str(exc)) from exc
+            shaped = replace(profile, tempo=profile.tempo * max(float(speed), 0.1))
+            shape_voice(raw, output_path, shaped, ffmpeg=ffmpeg_binary(),
+                        audio_bitrate=settings.audio_bitrate)
         return output_path
 
     # -------------------------------------------------------------- txt2img

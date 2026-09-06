@@ -91,12 +91,14 @@ from video_providers import (
     describe_providers,
     get_provider,
 )
+from magpie_tts import ReferenceUnusable
 from voices import (
     VOICE_PROFILES,
     all_voices,
     delete_pack,
     load_packs,
     resolve_voice,
+    save_clone_pack,
     save_pack,
 )
 from video_analyzer import analyse_video
@@ -483,7 +485,10 @@ def puter_tts(
     payload: TtsRequest = Body(...),
     credentials: JobCredentials = Depends(get_credentials),
 ):
-    client = PuterClient(api_key=credentials.resolved_puter_key())
+    client = PuterClient(
+        api_key=credentials.resolved_puter_key(),
+        nim_api_key=credentials.resolved_nim_key(),
+    )
     profile = resolve_voice(payload.accent)
     destination = Path(tempfile.mkdtemp(prefix="tts-", dir=settings.cache_dir)) / "voice.mp3"
     try:
@@ -584,10 +589,62 @@ def list_voices() -> List[VoiceInfo]:
             deep=profile.pitch_semitones < -1.0,
             layered=profile.is_layered,
             custom=profile.key in packs,
+            cloned=profile.is_cloned,
             note=profile.note,
         )
         for profile in all_voices().values()
     ]
+
+
+@app.post("/api/v1/voices/clone", response_model=VoiceInfo)
+async def create_cloned_voice(
+    sample: UploadFile = File(...),
+    key: str = Form(...),
+    label: str = Form(default=""),
+    language: str = Form(default="en-US"),
+    quality: int = Form(default=20),
+    note: str = Form(default=""),
+    pitch_semitones: Optional[float] = Form(default=None),
+    tempo: Optional[float] = Form(default=None),
+    reverb: Optional[float] = Form(default=None),
+    gain_db: Optional[float] = Form(default=None),
+    lowpass_hz: Optional[float] = Form(default=None),
+    highpass_hz: Optional[float] = Form(default=None),
+    sub_octave: Optional[float] = Form(default=None),
+    double_detune: Optional[float] = Form(default=None),
+    growl: Optional[float] = Form(default=None),
+    body_db: Optional[float] = Form(default=None),
+    presence_db: Optional[float] = Form(default=None),
+) -> VoiceInfo:
+    """Save a voice cloned from an uploaded recording.
+
+    Unlike a shaping pack, this one does not inherit a stock speaker: the
+    recording *is* the voice, and Magpie synthesises new lines in it. The
+    shaping knobs still apply on top, so a clone can be pitched and layered
+    like anything else.
+    """
+    staged = Path(tempfile.mkdtemp(prefix="clone-", dir=settings.cache_dir))
+    landing = staged / (Path(sample.filename or "sample").name or "sample")
+    landing.write_bytes(await sample.read())
+    try:
+        profile, report = save_clone_pack(
+            key, label, landing, language=language, quality=quality, note=note,
+            pitch_semitones=pitch_semitones, tempo=tempo, reverb=reverb,
+            gain_db=gain_db, lowpass_hz=lowpass_hz, highpass_hz=highpass_hz,
+            sub_octave=sub_octave, double_detune=double_detune, growl=growl,
+            body_db=body_db, presence_db=presence_db,
+        )
+    except (ValueError, ReferenceUnusable) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+    return VoiceInfo(
+        key=profile.key, label=profile.label, voice_id=profile.voice_id,
+        language=profile.language, deep=profile.pitch_semitones < -1.0,
+        layered=profile.is_layered, custom=True, cloned=True,
+        note=profile.note, reference_notes=report.notes,
+    )
 
 
 @app.post("/api/v1/voices", response_model=VoiceInfo)
@@ -628,7 +685,8 @@ def create_voice_pack(
     return VoiceInfo(
         key=profile.key, label=profile.label, voice_id=profile.voice_id,
         language=profile.language, deep=profile.pitch_semitones < -1.0,
-        layered=profile.is_layered, custom=True, note=profile.note,
+        layered=profile.is_layered, custom=True, cloned=profile.is_cloned,
+        note=profile.note,
     )
 
 
