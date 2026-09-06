@@ -169,6 +169,12 @@ class RenderError(RuntimeError):
     pass
 
 
+# The longest the last frame may be held to let a voiceover finish. Long enough
+# to keep a word from being clipped, short enough that it reads as a beat rather
+# than as a stall.
+MAX_FREEZE_TAIL = 0.6
+
+
 # ---------------------------------------------------------------------------
 # Fonts
 # ---------------------------------------------------------------------------
@@ -1374,7 +1380,11 @@ class VideoRenderer:
         audio_clip, audio_duration = self._build_audio(base, voiceover, duration)
         if audio_duration > duration + 0.25:
             base = self._extend_to(base, audio_duration)
-            duration = audio_duration
+            # _extend_to caps the hold, so the picture may be shorter than the
+            # audio asked for; the mix follows the picture, never the reverse.
+            duration = _duration_of(base) or audio_duration
+            if audio_clip is not None and audio_duration > duration + 0.05:
+                audio_clip = _sub(audio_clip, 0.0, duration)
 
         layers = [base]
         self.report(JobStage.RENDERING, 0.69, f"Laying out {len(stickers)} sticker(s)")
@@ -1497,10 +1507,23 @@ class VideoRenderer:
         return apply_frame_effect(clip, effect)
 
     def _extend_to(self, clip, target_duration: float):
-        """Hold the last frame so a long voiceover is never cut off."""
+        """Hold the last frame so a short voiceover tail is never cut off.
+
+        Strictly rationed. An unbounded hold is how a voice line placed two
+        seconds past the end of the timeline turned into two seconds of frozen
+        frame on the end of the edit - which reads as a crash, not an ending.
+        Past the cap the tail is trimmed instead, and the audio follows it.
+        """
         extra = target_duration - (clip.duration or 0.0)
         if extra <= 0.05:
             return clip
+        if extra > MAX_FREEZE_TAIL:
+            self.warn(
+                f"Voiceover runs {extra:.1f}s past the last cut; held the final "
+                f"frame for {MAX_FREEZE_TAIL:.1f}s and let the rest go rather "
+                f"than freezing the ending."
+            )
+            extra = MAX_FREEZE_TAIL
         last_time = max((clip.duration or 0.0) - (1.0 / max(self.fps, 1)), 0.0)
         frame = clip.get_frame(last_time)
         tail = _with_duration(ImageClip(frame), extra)

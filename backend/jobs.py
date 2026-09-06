@@ -382,12 +382,21 @@ class JobManager:
                          message="Analysing what is actually in the footage")
             nim_key = request.credentials.resolved_nim_key()
             analyses: List[VideoAnalysis] = []
+            # The vision pass is the slowest thing in the pipeline - minutes a
+            # clip. It exists to tell the planner what it is looking at, so
+            # when the plan is already written it buys nothing: a six clip
+            # render spent a quarter of an hour describing footage nobody was
+            # going to ask about. The local measurements still run.
+            looking = request.plan_override is None
             for index, clip_path in enumerate(request.clip_paths):
                 self._update(
                     job_id, progress=0.02 + 0.02 * index,
-                    message=f"Analysing clip {index + 1}/{len(request.clip_paths)}",
+                    message=f"{'Analysing' if looking else 'Measuring'} clip "
+                            f"{index + 1}/{len(request.clip_paths)}",
                 )
-                analyses.append(analyse_video(clip_path, nim_api_key=nim_key))
+                analyses.append(analyse_video(
+                    clip_path, nim_api_key=nim_key, use_vision=looking,
+                ))
             if analyses and analyses[0].vision_error:
                 self._append_warnings(job_id, [f"Vision pass: {analyses[0].vision_error}"])
 

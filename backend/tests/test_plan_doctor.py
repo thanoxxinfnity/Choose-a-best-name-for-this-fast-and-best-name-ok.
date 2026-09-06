@@ -228,17 +228,39 @@ def test_a_line_landing_on_a_cut_is_nudged_off_it():
     assert plan.audio.tts_lines[0].start_seconds > 1.8
 
 
-def test_a_line_that_runs_past_the_end_is_reported_but_not_guessed_at():
-    """Shortening someone's script is a creative call, not a repair."""
-    plan = _plan(2.0, 2.0)
+def test_a_line_that_runs_past_the_end_is_pulled_back_inside_it():
+    """The renderer holds the last frame to let a late line finish speaking.
+
+    So leaving this one reported-but-unfixed did not preserve the script, it
+    bought three seconds of frozen frame on the end of a real edit. Moving the
+    line is the same repair the two checks above it already make.
+    """
+    plan = _plan(3.0, 3.0, 3.0)
+    plan.audio = AudioSpec(use_puter_tts=True, tts_lines=[
+        TtsLine(text="bow down", start_time="00:00:08.500"),
+    ])
+    plan, diagnosis = review(plan)
+
+    finding = next(f for f in diagnosis.findings if f.rule == "voice_past_the_end")
+    assert finding.fixed is True
+    assert finding.severity == SERIOUS
+    line = plan.audio.tts_lines[0]
+    assert line.text == "bow down"
+    spoken = max(1.2, len(line.text.split()) / 2.6)
+    assert line.start_seconds + spoken <= 9.0
+
+
+def test_a_line_with_nowhere_left_to_go_is_dropped_rather_than_stretched():
+    """An edit two seconds long cannot carry a fifteen-second line."""
+    plan = _plan(1.0, 1.0)
     plan.audio = AudioSpec(use_puter_tts=True, tts_lines=[
         TtsLine(text=" ".join(["word"] * 40), start_time="00:00:01.500"),
     ])
-    _, diagnosis = review(plan)
+    plan, diagnosis = review(plan)
 
     finding = next(f for f in diagnosis.findings if f.rule == "voice_past_the_end")
-    assert finding.fixed is False
-    assert finding.severity == SERIOUS
+    assert finding.fixed is True
+    assert plan.audio.timed_lines == []
 
 
 def test_well_placed_lines_raise_nothing():
@@ -288,15 +310,17 @@ def test_diagnose_without_treating_changes_nothing():
 
 
 def test_outstanding_findings_become_a_prompt_for_the_model():
+    """Findings the doctor cannot repair itself go back to the model.
+
+    Footage that is black end to end is the honest example: there is no
+    brighter frame to step onto, so the only fix is a different shot.
+    """
     plan = _plan(2.0, 2.0)
-    plan.audio = AudioSpec(use_puter_tts=True, tts_lines=[
-        TtsLine(text=" ".join(["word"] * 40), start_time="00:00:01.500"),
-    ])
-    _, diagnosis = review(plan)
+    _, diagnosis = review(plan, frame_probe=lambda *_: 0.005)
 
     block = diagnosis.to_prompt_block()
     assert "REVIEW OF YOUR TIMELINE" in block
-    assert "voice line 1" in block
+    assert "black frame" in block
 
 
 def test_a_clean_plan_produces_no_prompt_block():

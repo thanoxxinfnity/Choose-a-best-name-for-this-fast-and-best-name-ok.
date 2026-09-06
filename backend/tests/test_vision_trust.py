@@ -129,3 +129,20 @@ def test_a_distrusted_content_type_cannot_steer_the_theme(clip):
 def test_the_flag_is_reported_to_the_app(clip):
     analysis = _analyse(clip, settings.nim_vision_fallback_model)
     assert analysis.to_dict()["vision_trusted"] is False
+
+
+# ------------------------------------------------- what the pass is worth ----
+
+def test_a_supplied_plan_skips_the_vision_pass():
+    """Vision exists to tell the planner what it is looking at.
+
+    With the plan already written it costs minutes a clip and changes nothing,
+    so the job must ask for the local measurements only.
+    """
+    import inspect
+
+    import jobs
+
+    body = inspect.getsource(jobs.JobManager._run)
+    assert "use_vision=looking" in body
+    assert "looking = request.plan_override is None" in body

@@ -391,12 +391,29 @@ def _check_voice_timing(plan: EditPlan, diagnosis: Diagnosis, treat: bool) -> No
                 line.start_time = format_timecode(start)
 
         if start + spoken > total + 0.5:
+            # Reporting this and leaving it was worse than not checking at all:
+            # the renderer holds the last frame to let the line finish, so an
+            # overrun of two seconds became two seconds of frozen smear on the
+            # end of the edit. Pull the line back inside instead.
+            room = total - 0.15 - spoken
+            droppable = room < previous_end + 0.05 or room < 0.0
             diagnosis.findings.append(Finding(
                 "voice_past_the_end", SERIOUS,
                 f"voice line {position + 1} would still be speaking {start + spoken - total:.1f}s "
-                f"after the edit ends.",
-                fixed=False,
+                f"after the edit ends"
+                + ("; there is no room left for it." if droppable
+                   else f"; moved back to {max(room, 0.0):.1f}s."),
+                fixed=treat,
             ))
+            if treat:
+                if droppable:
+                    # timed_lines is a filtered copy and `active` is derived
+                    # from the text, so a line leaves the edit by losing its
+                    # text - removing it from the copy would change nothing.
+                    line.text = ""
+                    continue
+                start = max(room, 0.0)
+                line.start_time = format_timecode(start)
         previous_end = start + spoken
 
 
