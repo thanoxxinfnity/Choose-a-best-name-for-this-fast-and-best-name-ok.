@@ -208,10 +208,16 @@ def _matte_keyframes(
 ) -> Tuple[List[Tuple[int, np.ndarray]], float, int]:
     """Segment the subject at intervals, at reduced resolution.
 
-    Two things make this affordable. The model is only asked every few frames,
-    because a silhouette moves far more slowly than 60fps; and it is asked at a
-    few hundred pixels wide, because a matte is a low-frequency shape and
-    upscaling one costs nothing that shows.
+    What makes this affordable is the sampling, not the downscale: the model is
+    only asked every few frames, because a silhouette moves far more slowly
+    than 60fps. ``mask_fps`` is therefore the knob that controls cost.
+
+    ``matte_width`` is not a speed control, measured rather than assumed - 320
+    against 720 on a 720x1080 clip came out 334ms against 352ms a frame, which
+    is noise. u2net resizes its input to a fixed size internally, so handing it
+    something smaller saves only the resize it would have done itself. The
+    downscale stays because it bounds memory on large frames, and because a
+    matte is a low-frequency shape that loses nothing by being upscaled.
     """
     from PIL import Image
     from rembg import new_session, remove
@@ -288,7 +294,8 @@ def ai_remove_background(
 
     Done in two passes. The first segments the subject at ``mask_fps`` and at
     ``matte_width`` pixels wide; the second composites every frame, blending
-    between the two key mattes that bracket it.
+    between the two key mattes that bracket it. Lower ``mask_fps`` to make it
+    cheaper - it is the only parameter here that meaningfully does.
 
     The blend is the point. Holding one matte until the next arrives freezes
     the cut-out edge for several frames and then jumps it, which on a moving
