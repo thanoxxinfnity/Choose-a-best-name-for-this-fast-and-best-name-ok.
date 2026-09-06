@@ -371,14 +371,18 @@ def ai_remove_background(
         return np.clip(cv2.GaussianBlur(mask, (0, 0), sigmaX=sigma), 0, 255).astype(np.uint8)
 
     state = {"index": 0}
+    backdrop = _BackgroundSource(background, fill)
 
-    def process(frame: np.ndarray, _t: float) -> np.ndarray:
+    def process(frame: np.ndarray, at: float) -> np.ndarray:
         mask = alpha_at(state["index"], frame.shape[:2])
         state["index"] += 1
         rgba = np.dstack([frame, mask])
-        return composite_over(rgba, _background_frame(background, frame.shape, fill))
+        return composite_over(rgba, backdrop.frame_at(at, frame.shape))
 
-    return _process_frames(source, destination, process, ffmpeg=ffmpeg)
+    try:
+        return _process_frames(source, destination, process, ffmpeg=ffmpeg)
+    finally:
+        backdrop.close()
 
 
 def _key_and_fill(frame, key_rgb, tolerance, background, fill):
@@ -389,7 +393,96 @@ def _key_and_fill(frame, key_rgb, tolerance, background, fill):
 _BACKGROUND_CACHE: Dict[str, np.ndarray] = {}
 
 
+class _BackgroundSource:
+    """Frames to put behind the cut-out subject: a still, or a moving clip.
+
+    A still was all this supported, which is the wrong shape for the thing it
+    is mostly wanted for - putting generated animation behind a character.
+
+    A clip is followed by time rather than by frame count, so a 30fps
+    background stays in step behind 60fps footage instead of running at half
+    speed, and it loops when the foreground outlasts it.
+    """
+
+    def __init__(self, background: Optional[Path], fill: Tuple[int, int, int]) -> None:
+        self.fill = fill
+        self.capture: Optional[Any] = None
+        self.still: Optional[np.ndarray] = None
+        self._resized: Dict[Tuple[int, int], np.ndarray] = {}
+        self._position = -1
+        self.fps = 0.0
+        self.frames = 0
+
+        if background is None:
+            return
+        path = Path(background)
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is not None:
+            self.still = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            return
+
+        capture = cv2.VideoCapture(str(path))
+        if capture.isOpened():
+            frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if frames > 0:
+                self.capture = capture
+                self.fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+                self.frames = frames
+                return
+            capture.release()
+        logger.warning("Background %s is neither an image nor a readable video", path)
+
+    def frame_at(self, seconds: float, shape: Tuple[int, int]) -> np.ndarray:
+        height, width = shape[:2]
+        if self.capture is not None:
+            frame = self._video_frame(seconds)
+            if frame is not None:
+                return cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+        if self.still is not None:
+            cached = self._resized.get((width, height))
+            if cached is None:
+                cached = cv2.resize(self.still, (width, height),
+                                    interpolation=cv2.INTER_LANCZOS4)
+                self._resized[(width, height)] = cached
+            return cached
+        return np.full((height, width, 3), self.fill, dtype=np.uint8)
+
+    def _video_frame(self, seconds: float) -> Optional[np.ndarray]:
+        wanted = int(seconds * max(self.fps, 1.0)) % max(self.frames, 1)
+        # Reading forward is far cheaper than seeking, so seek only when the
+        # loop wraps or a frame is skipped outright.
+        if wanted < self._position or wanted - self._position > 8:
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, wanted)
+            self._position = wanted - 1
+        frame = None
+        while self._position < wanted:
+            ok, read = self.capture.read()
+            if not ok or read is None:
+                self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self._position = -1
+                ok, read = self.capture.read()
+                if not ok or read is None:
+                    return None
+                self._position = 0
+                frame = read
+                break
+            self._position += 1
+            frame = read
+        if frame is None:
+            ok, frame = self.capture.read()
+            if not ok or frame is None:
+                return None
+            self._position += 1
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    def close(self) -> None:
+        if self.capture is not None:
+            self.capture.release()
+            self.capture = None
+
+
 def _background_frame(background: Optional[Path], shape, fill) -> np.ndarray:
+    """One still background frame. Kept for the chroma-key path."""
     height, width = shape[:2]
     if background is None:
         return np.full((height, width, 3), fill, dtype=np.uint8)

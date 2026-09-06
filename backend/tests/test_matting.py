@@ -211,3 +211,89 @@ def test_a_confident_matte_is_allowed_through(monkeypatch, tmp_path):
     )
     ai_remove_background(Path("in.mp4"), tmp_path / "out.mp4")
     assert seen.get("ran") is True
+
+
+# ------------------------------------------- a moving background, not a still --
+
+def _clip(path, colour, seconds=1.0, fps=10):
+    """A tiny video of one flat colour, so a frame identifies its source."""
+    import subprocess
+
+    from puter_integration import ffmpeg_binary
+
+    subprocess.run(
+        [ffmpeg_binary(), "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i",
+         f"color=c={colour}:size=64x64:rate={fps}:duration={seconds}",
+         "-pix_fmt", "yuv420p", str(path)],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def test_a_still_background_still_works(tmp_path):
+    import cv2
+
+    from enhancers import _BackgroundSource
+
+    path = tmp_path / "bg.png"
+    cv2.imwrite(str(path), np.full((32, 32, 3), (200, 30, 30), np.uint8))
+    source = _BackgroundSource(path, (0, 0, 0))
+    frame = source.frame_at(0.0, (64, 48))
+    assert frame.shape == (64, 48, 3)
+    assert int(frame[..., 2].mean()) > 150  # BGR blue channel became RGB red
+
+
+def test_a_video_background_serves_moving_frames(tmp_path):
+    """A still was all this supported, which is the wrong shape for putting
+    generated animation behind a character."""
+    from enhancers import _BackgroundSource
+
+    source = _BackgroundSource(_clip(tmp_path / "bg.mp4", "green", seconds=1.0), (0, 0, 0))
+    assert source.capture is not None
+    frame = source.frame_at(0.5, (32, 24))
+    assert frame.shape == (32, 24, 3)
+    assert int(frame[..., 1].mean()) > int(frame[..., 2].mean())
+    source.close()
+
+
+def test_the_background_is_followed_by_time_not_frame_count(tmp_path):
+    """A 10fps background behind 60fps footage must not run at a sixth speed."""
+    from enhancers import _BackgroundSource
+
+    source = _BackgroundSource(_clip(tmp_path / "bg.mp4", "blue", seconds=2.0, fps=10),
+                               (0, 0, 0))
+    assert source.fps == pytest.approx(10.0, abs=0.5)
+    # One second in is frame ten of a ten-fps clip, whatever the foreground runs at.
+    source.frame_at(1.0, (16, 16))
+    assert source._position == 10
+    source.close()
+
+
+def test_a_short_background_loops_under_longer_footage(tmp_path):
+    from enhancers import _BackgroundSource
+
+    source = _BackgroundSource(_clip(tmp_path / "bg.mp4", "red", seconds=1.0, fps=10),
+                               (0, 0, 0))
+    # Well past the end of a one second clip; it should wrap rather than fail.
+    frame = source.frame_at(7.3, (16, 16))
+    assert frame is not None and frame.shape == (16, 16, 3)
+    source.close()
+
+
+def test_no_background_is_the_fill_colour(tmp_path):
+    from enhancers import _BackgroundSource
+
+    frame = _BackgroundSource(None, (7, 9, 11)).frame_at(0.0, (8, 8))
+    assert frame.shape == (8, 8, 3)
+    assert tuple(int(v) for v in frame[0, 0]) == (7, 9, 11)
+
+
+def test_something_that_is_neither_falls_back_to_the_fill(tmp_path):
+    from enhancers import _BackgroundSource
+
+    junk = tmp_path / "nope.mp4"
+    junk.write_bytes(b"not a video")
+    source = _BackgroundSource(junk, (5, 5, 5))
+    assert source.capture is None and source.still is None
+    assert tuple(int(v) for v in source.frame_at(0.0, (8, 8))[0, 0]) == (5, 5, 5)
