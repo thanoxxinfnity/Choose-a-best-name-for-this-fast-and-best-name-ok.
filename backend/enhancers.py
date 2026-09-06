@@ -14,6 +14,7 @@ clip is not affordable).
 
 from __future__ import annotations
 
+import bisect
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -200,45 +201,132 @@ def chroma_key_video(
     )
 
 
+def _matte_keyframes(
+    source: Path,
+    mask_fps: float,
+    matte_width: int,
+) -> Tuple[List[Tuple[int, np.ndarray]], float, int]:
+    """Segment the subject at intervals, at reduced resolution.
+
+    Two things make this affordable. The model is only asked every few frames,
+    because a silhouette moves far more slowly than 60fps; and it is asked at a
+    few hundred pixels wide, because a matte is a low-frequency shape and
+    upscaling one costs nothing that shows.
+    """
+    from PIL import Image
+    from rembg import new_session, remove
+
+    session = new_session("u2net_human_seg")
+    capture = cv2.VideoCapture(str(source))
+    if not capture.isOpened():
+        raise RuntimeError(f"Cannot open {source}")
+
+    keys: List[Tuple[int, np.ndarray]] = []
+    try:
+        fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+        stride = max(1, int(round(fps / max(mask_fps, 0.5))))
+        total = 0
+        index = 0
+        while True:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                break
+            total = index + 1
+            if index % stride == 0:
+                height, width = frame.shape[:2]
+                scale = min(1.0, matte_width / float(max(width, 1)))
+                small = cv2.resize(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    (max(32, int(width * scale)), max(32, int(height * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+                cut = remove(Image.fromarray(small), session=session,
+                             only_mask=True, post_process_mask=True)
+                mask = np.array(cut.convert("L") if hasattr(cut, "convert") else cut)
+                keys.append((index, mask))
+            index += 1
+    finally:
+        capture.release()
+    return keys, fps, total
+
+
+def _smooth_masks(keys: List[Tuple[int, np.ndarray]]) -> List[Tuple[int, np.ndarray]]:
+    """Median-filter the key masks along time.
+
+    A segmenter run independently on each sampled frame occasionally returns
+    one bad matte - a dropped limb, a swallowed edge. Held or interpolated,
+    that single bad frame becomes a visible pop. A median of three neighbours
+    removes it without softening a real change, because a real change is
+    present in two frames running and an error is not.
+    """
+    if len(keys) < 3:
+        return keys
+    smoothed: List[Tuple[int, np.ndarray]] = [keys[0]]
+    for position in range(1, len(keys) - 1):
+        window = [keys[position - 1][1], keys[position][1], keys[position + 1][1]]
+        shape = window[1].shape
+        window = [
+            mask if mask.shape == shape
+            else cv2.resize(mask, (shape[1], shape[0]), interpolation=cv2.INTER_LINEAR)
+            for mask in window
+        ]
+        smoothed.append((keys[position][0], np.median(np.stack(window), axis=0).astype(np.uint8)))
+    smoothed.append(keys[-1])
+    return smoothed
+
+
 def ai_remove_background(
     source: Path,
     destination: Path,
     background: Optional[Path] = None,
     fill: Tuple[int, int, int] = (0, 0, 0),
     mask_fps: float = 6.0,
+    matte_width: int = 320,
     ffmpeg: Optional[str] = None,
 ) -> Path:
     """Cut the subject out with ``rembg`` and put it over a new background.
 
-    ``rembg`` runs at ``mask_fps``, not per frame: segmenting every frame of a
-    60fps clip would cost minutes per second of video. Masks are interpolated
-    between key frames, which is stable because a subject silhouette moves far
-    more slowly than the frame rate.
+    Done in two passes. The first segments the subject at ``mask_fps`` and at
+    ``matte_width`` pixels wide; the second composites every frame, blending
+    between the two key mattes that bracket it.
+
+    The blend is the point. Holding one matte until the next arrives freezes
+    the cut-out edge for several frames and then jumps it, which on a moving
+    subject reads as the character sliding inside their own outline. Crossing
+    smoothly between them costs nothing and removes that entirely.
     """
-    from rembg import new_session, remove
-    from PIL import Image
+    keys, _fps, _total = _matte_keyframes(Path(source), mask_fps, matte_width)
+    if not keys:
+        raise RuntimeError(f"Could not segment any frame of {source}")
+    keys = _smooth_masks(keys)
+    indices = [index for index, _mask in keys]
 
-    session = new_session("u2net_human_seg")
-    cache: List[Tuple[float, np.ndarray]] = []
-    interval = 1.0 / max(mask_fps, 0.5)
+    def alpha_at(frame_index: int, shape: Tuple[int, int]) -> np.ndarray:
+        position = bisect.bisect_right(indices, frame_index) - 1
+        position = min(max(position, 0), len(keys) - 1)
+        left_index, left = keys[position]
+        if position + 1 < len(keys) and frame_index > left_index:
+            right_index, right = keys[position + 1]
+            span = max(right_index - left_index, 1)
+            weight = min(max((frame_index - left_index) / span, 0.0), 1.0)
+            if right.shape != left.shape:
+                right = cv2.resize(right, (left.shape[1], left.shape[0]),
+                                   interpolation=cv2.INTER_LINEAR)
+            blended = left.astype(np.float32) * (1.0 - weight) + right.astype(np.float32) * weight
+        else:
+            blended = left.astype(np.float32)
 
-    def mask_for(frame: np.ndarray, t: float) -> np.ndarray:
-        if cache and t - cache[-1][0] < interval:
-            return cache[-1][1]
-        rgba = remove(
-            Image.fromarray(frame), session=session, only_mask=True, post_process_mask=True
-        )
-        mask = np.array(rgba.convert("L") if hasattr(rgba, "convert") else rgba)
-        if mask.shape[:2] != frame.shape[:2]:
-            mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=1.5)
-        cache.append((t, mask))
-        if len(cache) > 2:
-            cache.pop(0)
-        return mask
+        mask = cv2.resize(blended, (shape[1], shape[0]), interpolation=cv2.INTER_LINEAR)
+        # Feather in proportion to the frame: the same halo has to look right
+        # at 720p and at 4K.
+        sigma = max(1.0, min(shape) * 0.004)
+        return np.clip(cv2.GaussianBlur(mask, (0, 0), sigmaX=sigma), 0, 255).astype(np.uint8)
 
-    def process(frame: np.ndarray, t: float) -> np.ndarray:
-        mask = mask_for(frame, t)
+    state = {"index": 0}
+
+    def process(frame: np.ndarray, _t: float) -> np.ndarray:
+        mask = alpha_at(state["index"], frame.shape[:2])
+        state["index"] += 1
         rgba = np.dstack([frame, mask])
         return composite_over(rgba, _background_frame(background, frame.shape, fill))
 
