@@ -51,6 +51,10 @@ class JobCredentials:
     puter_key: str = ""
     nim_key: str = ""
     youtube_token: str = ""
+    # The user's own video-generation endpoint. A URL rather than a key, but it
+    # travels the same way: set on the device, sent per request, never stored
+    # on the server.
+    video_endpoint: str = ""
 
     def resolved_puter_key(self) -> str:
         return self.puter_key or settings.puter_api_key
@@ -60,6 +64,9 @@ class JobCredentials:
 
     def resolved_youtube_token(self) -> str:
         return self.youtube_token or settings.youtube_api_key
+
+    def resolved_video_endpoint(self) -> str:
+        return (self.video_endpoint or settings.videoforge_base_url).rstrip("/")
 
 
 @dataclass

@@ -253,6 +253,8 @@ object ApiClient {
         SecureStore.puterKey(context).takeIf { it.isNotBlank() }?.let { add("X-Puter-Key", it) }
         SecureStore.nvidiaNimKey(context).takeIf { it.isNotBlank() }?.let { add("X-NIM-Key", it) }
         SecureStore.youtubeToken(context).takeIf { it.isNotBlank() }?.let { add("X-YouTube-Token", it) }
+        SecureStore.videoEndpoint(context).takeIf { it.isNotBlank() }
+            ?.let { add("X-Video-Endpoint", it) }
         add("Accept", "application/json")
     }.build()
 

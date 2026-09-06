@@ -150,11 +150,13 @@ def get_credentials(
     x_puter_key: Optional[str] = Header(default=None, alias="X-Puter-Key"),
     x_nim_key: Optional[str] = Header(default=None, alias="X-NIM-Key"),
     x_youtube_token: Optional[str] = Header(default=None, alias="X-YouTube-Token"),
+    x_video_endpoint: Optional[str] = Header(default=None, alias="X-Video-Endpoint"),
 ) -> JobCredentials:
     return JobCredentials(
         puter_key=(x_puter_key or "").strip(),
         nim_key=(x_nim_key or "").strip(),
         youtube_token=(x_youtube_token or "").strip(),
+        video_endpoint=(x_video_endpoint or "").strip(),
     )
 
 
@@ -876,10 +878,12 @@ def text_to_video(
 ):
     """Generate a clip from a prompt (Puter wan2.2-t2v-a14b by default)."""
     keys = {"puter": credentials.resolved_puter_key()}
+    endpoint = credentials.resolved_video_endpoint()
     provider = (
-        get_provider(payload.provider, api_key=keys.get(payload.provider or "puter", ""))
+        get_provider(payload.provider, api_key=keys.get(payload.provider or "puter", ""),
+                     base_url=endpoint)
         if payload.provider
-        else best_available(keys, need_text_to_video=True)
+        else best_available(keys, need_text_to_video=True, base_url=endpoint)
     )
     if provider is None:
         raise HTTPException(
@@ -922,10 +926,12 @@ async def image_to_video(
             handle.write(chunk)
 
     keys = {"puter": credentials.resolved_puter_key()}
+    endpoint = credentials.resolved_video_endpoint()
     provider = (
-        get_provider(provider_key, api_key=keys.get(provider_key or "puter", ""))
+        get_provider(provider_key, api_key=keys.get(provider_key or "puter", ""),
+                     base_url=endpoint)
         if provider_key
-        else best_available(keys)
+        else best_available(keys, base_url=endpoint)
     )
     if provider is None:
         raise HTTPException(status_code=503, detail="No image-to-video provider available.")

@@ -529,12 +529,18 @@ def describe_providers(api_keys: Optional[Dict[str, str]] = None) -> List[Provid
 
 
 def best_available(
-    api_keys: Optional[Dict[str, str]] = None, need_text_to_video: bool = False
+    api_keys: Optional[Dict[str, str]] = None,
+    need_text_to_video: bool = False,
+    **options: object,
 ) -> Optional[VideoProvider]:
-    """The first configured provider that can do what is being asked."""
+    """The first configured provider that can do what is being asked.
+
+    ``options`` reach every candidate, so a per-request setting such as the
+    user's own endpoint applies whichever provider ends up being chosen.
+    """
     keys = api_keys or {}
     for key, factory in _REGISTRY.items():
-        provider = factory(api_key=keys.get(key, ""))
+        provider = factory(api_key=keys.get(key, ""), **options)
         if not provider.is_configured:
             continue
         if need_text_to_video and not provider.supports_text_to_video:

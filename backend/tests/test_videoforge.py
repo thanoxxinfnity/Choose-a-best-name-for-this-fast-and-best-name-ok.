@@ -217,3 +217,41 @@ def test_two_provider_objects_share_one_rate_limit():
     assert get_provider("videoforge")._pace.__func__ is \
            get_provider("videoforge")._pace.__func__
     assert "_submit_lock" in vars(VideoForgeProvider)
+
+
+# --------------------------------------------- the endpoint is the user's ---
+
+def test_the_endpoint_comes_from_the_request_not_a_constant():
+    """It is set on the device and sent per request, like the keys are."""
+    provider = get_provider("videoforge", base_url="https://mine.example/")
+    assert provider._base() == "https://mine.example"
+
+
+def test_without_one_the_server_default_is_used():
+    from config import settings
+
+    assert get_provider("videoforge")._base() == settings.videoforge_base_url.rstrip("/")
+
+
+def test_the_endpoint_reaches_whichever_provider_is_chosen():
+    """best_available picks the provider; the setting has to survive that."""
+    from video_providers import best_available
+
+    provider = best_available({}, need_text_to_video=True, base_url="https://mine.example")
+    assert provider is not None
+    assert provider._base() == "https://mine.example"
+
+
+def test_credentials_carry_the_endpoint():
+    from jobs import JobCredentials
+
+    assert JobCredentials(video_endpoint="https://x.example/").resolved_video_endpoint() \
+        == "https://x.example"
+
+
+def test_the_wait_outlasts_the_services_own_retry_ladder():
+    """90s, 4min, 10min then 15min: a task can sit queued for over half an
+    hour with nothing wrong, and abandoning it at fifteen would be wrong."""
+    from config import settings
+
+    assert settings.videoforge_timeout > (90 + 240 + 600 + 900)

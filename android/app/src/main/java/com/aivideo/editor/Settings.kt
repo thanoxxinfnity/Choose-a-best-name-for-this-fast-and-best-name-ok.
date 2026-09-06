@@ -79,6 +79,7 @@ object SecureStore {
     const val KEY_YOUTUBE_TOKEN = "youtube_data_token"
     const val KEY_PUTER = "puter_api_key"
     const val KEY_BACKEND_URL = "backend_url"
+    const val KEY_VIDEO_ENDPOINT = "video_endpoint_url"
     const val KEY_VOICE_ACCENT = "voice_accent"
     const val KEY_CAPTIONS = "captions_enabled"
     const val KEY_VOICEOVER = "voiceover_enabled"
@@ -137,6 +138,10 @@ object SecureStore {
 
     fun puterKey(context: Context): String = read(context, KEY_PUTER)
 
+    /** The user's own video-generation endpoint. Blank means the server default. */
+    fun videoEndpoint(context: Context): String =
+        read(context, KEY_VIDEO_ENDPOINT).trimEnd('/')
+
     fun backendUrl(context: Context): String =
         read(context, KEY_BACKEND_URL).ifBlank { BuildConfig.DEFAULT_BACKEND_URL }.trimEnd('/')
 
@@ -169,6 +174,7 @@ object SecureStore {
             .remove(KEY_NVIDIA_NIM)
             .remove(KEY_YOUTUBE_TOKEN)
             .remove(KEY_PUTER)
+            .remove(KEY_VIDEO_ENDPOINT)
             .apply()
     }
 
@@ -205,6 +211,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     var nimKey by rememberSaveable { mutableStateOf(SecureStore.nvidiaNimKey(context)) }
     var youtubeToken by rememberSaveable { mutableStateOf(SecureStore.youtubeToken(context)) }
     var puterKey by rememberSaveable { mutableStateOf(SecureStore.puterKey(context)) }
+    var videoEndpoint by rememberSaveable { mutableStateOf(SecureStore.videoEndpoint(context)) }
     var testing by rememberSaveable { mutableStateOf(false) }
 
     fun persist() {
@@ -212,6 +219,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         SecureStore.write(context, SecureStore.KEY_NVIDIA_NIM, nimKey)
         SecureStore.write(context, SecureStore.KEY_YOUTUBE_TOKEN, youtubeToken)
         SecureStore.write(context, SecureStore.KEY_PUTER, puterKey)
+        SecureStore.write(context, SecureStore.KEY_VIDEO_ENDPOINT, videoEndpoint.trimEnd('/'))
     }
 
     Scaffold(
@@ -256,6 +264,18 @@ fun SettingsScreen(onBack: () -> Unit) {
                 onValueChange = { backendUrl = it },
                 label = { Text("Backend URL") },
                 supportingText = { Text("e.g. http://10.0.2.2:8000 (emulator) or https://api.example.com") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            OutlinedTextField(
+                value = videoEndpoint,
+                onValueChange = { videoEndpoint = it },
+                label = { Text("Video generation endpoint") },
+                supportingText = {
+                    Text("Your own generation service. Leave blank to use the server's default.")
+                },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 modifier = Modifier.fillMaxWidth(),

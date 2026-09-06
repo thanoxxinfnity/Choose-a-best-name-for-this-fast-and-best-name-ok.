@@ -67,7 +67,11 @@ class Settings(BaseSettings):
     # instead - it guarantees 10+ RPM and renders two at a time.
     videoforge_base_url: str = "https://w1zjp7xgayf0-d.space-z.ai"
     videoforge_rpm: int = 10
-    videoforge_timeout: int = 900
+    # The service rides out an upstream rate limit on its own ladder - 90s, then
+    # 4, 10 and 15 minutes - so a task can legitimately sit queued for well over
+    # half an hour without anything being wrong. Giving up at fifteen minutes
+    # would abandon tasks that were about to run.
+    videoforge_timeout: int = 2700
     videoforge_poll_seconds: float = 4.0
 
     puter_t2v_model: str = "sora-2"
