@@ -343,3 +343,79 @@ def test_modelscope_reports_a_failed_task_with_its_reason(monkeypatch, tmp_path)
     provider = video_providers.ModelScopeProvider(api_key="token")
     with pytest.raises(ProviderError, match="quota exhausted"):
         provider.text_to_video("a red cube", tmp_path / "out.mp4")
+
+
+# -------------------------------------------------------- Pollinations ------
+
+def test_pollinations_is_registered_with_its_model_range():
+    from video_providers import PollinationsProvider, provider_keys
+
+    assert "pollinations" in provider_keys()
+    info = PollinationsProvider(api_key="").info()
+    assert info.text_to_video and info.image_to_video
+    assert "wan-fast" in info.models and "veo" in info.models
+    assert "enter.pollinations.ai" in info.notes
+
+
+def test_pollinations_says_what_is_missing_rather_than_calling_out():
+    from video_providers import PollinationsProvider, ProviderError
+
+    with pytest.raises(ProviderError, match="enter.pollinations.ai"):
+        PollinationsProvider(api_key="").text_to_video(
+            "anything", Path("/tmp/never-written.mp4"))
+
+
+def test_pollinations_asks_for_a_vertical_clip(monkeypatch, tmp_path):
+    import video_providers
+
+    seen = {}
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "video/mp4"}
+        content = b"\x00" * 8192
+        text = ""
+
+    def _get(url, params=None, headers=None, timeout=None):
+        seen["url"] = url
+        seen["params"] = params or {}
+        seen["auth"] = (headers or {}).get("Authorization", "")
+        return _Response()
+
+    monkeypatch.setattr(video_providers.requests, "get", _get)
+    provider = video_providers.PollinationsProvider(api_key="sk_test")
+    result = provider.text_to_video("a red cube", tmp_path / "out.mp4",
+                                    seconds=5, resolution="720x1280")
+
+    assert "/video/" in seen["url"]
+    assert seen["params"]["aspectRatio"] == "9:16"
+    assert seen["params"]["duration"] == 5
+    assert seen["auth"] == "Bearer sk_test"
+    assert result.path.exists()
+
+
+def test_pollinations_rejects_an_error_wearing_a_200(monkeypatch, tmp_path):
+    """A JSON body with a 200 is a failure, not a video."""
+    import video_providers
+    from video_providers import ProviderError
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        content = b'{"error":"out of pollen"}'
+        text = '{"error":"out of pollen"}'
+
+    monkeypatch.setattr(video_providers.requests, "get",
+                        lambda *a, **k: _Response())
+    provider = video_providers.PollinationsProvider(api_key="sk_test")
+    with pytest.raises(ProviderError, match="out of pollen"):
+        provider.text_to_video("a red cube", tmp_path / "out.mp4")
+
+
+def test_pollinations_image_to_video_needs_a_reachable_still(tmp_path):
+    from video_providers import PollinationsProvider, ProviderError
+
+    provider = PollinationsProvider(api_key="sk_test")
+    with pytest.raises(ProviderError, match="public image URL"):
+        provider.image_to_video(tmp_path / "still.png", "move it",
+                                tmp_path / "out.mp4")

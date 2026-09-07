@@ -575,6 +575,125 @@ class ModelScopeProvider(VideoProvider):
         )
 
 
+class PollinationsProvider(VideoProvider):
+    """Pollinations, which fronts nineteen video models behind one key.
+
+    The cheapest route found: MiniMax H3 Turbo bills 0.00625 "pollen" per
+    generated second at 480p and a pollen is about a dollar, so a five second
+    clip costs roughly three cents - against forty cents for the same length
+    through Puter's Sora-2, which is what the last batch was being billed at.
+    It also carries Veo, Wan 3.0 and Seedance, so the model choice is not a
+    consolation prize for the price.
+
+    The API is a GET with the prompt in the path, like their image endpoint,
+    and it answers with the video bytes rather than a task id - so there is no
+    polling, just a long read.
+    """
+
+    key = "pollinations"
+    label = "Pollinations (Wan / Veo / Seedance)"
+    supports_text_to_video = True
+    supports_image_to_video = True
+    requires_key = True
+
+    BASE = "https://gen.pollinations.ai"
+    DEFAULT_MODEL = "wan-fast"
+
+    def models(self) -> List[str]:
+        return ["wan-fast", "wan", "wan-pro", "wan-3.0", "seedance-2.0-fast",
+                "seedance-2.5", "minimax-h3", "veo"]
+
+    def notes(self) -> str:
+        return (
+            "One key, nineteen video models. Around three cents a clip at 480p "
+            "- the cheapest of everything checked. Needs a free key from "
+            "enter.pollinations.ai/keys."
+        )
+
+    def _fetch(self, prompt: str, params: Dict[str, object], output_path: Path,
+               seconds: float, model: str, on_progress) -> GenerationResult:
+        from urllib.parse import quote  # noqa: PLC0415
+
+        if not self.api_key:
+            raise ProviderError(
+                "Pollinations needs a free key from enter.pollinations.ai/keys; "
+                "add it in Settings."
+            )
+        started = time.time()
+        report = self._reporter(on_progress, started)
+        report("generating", 0.15)
+
+        try:
+            response = requests.get(
+                f"{self.BASE}/video/{quote(prompt.strip()[:1500], safe='')}",
+                params={k: v for k, v in params.items() if v not in (None, "")},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=900,
+            )
+        except requests.RequestException as exc:
+            raise ProviderError(f"Pollinations was unreachable: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise ProviderError(
+                f"Pollinations refused the request: HTTP {response.status_code} "
+                f"{response.text[:200]}"
+            )
+        # A JSON body here is an error wearing a 200, not a video.
+        if "video" not in (response.headers.get("content-type") or ""):
+            raise ProviderError(
+                f"Pollinations returned {response.headers.get('content-type')} "
+                f"instead of video: {response.text[:200]}"
+            )
+        if len(response.content) < 1024:
+            raise ProviderError(
+                f"Pollinations returned only {len(response.content)} bytes"
+            )
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(response.content)
+        report("done", 1.0)
+        return GenerationResult(
+            path=output_path, provider=self.key, model=model, seconds=seconds,
+            prompt=prompt, elapsed=time.time() - started,
+        )
+
+    def text_to_video(
+        self, prompt, output_path, seconds=5.0, resolution="720x1280",
+        on_progress=None, **kwargs,
+    ) -> GenerationResult:
+        model = str(kwargs.get("model") or self.DEFAULT_MODEL)
+        width, height = _parse_resolution(resolution)
+        return self._fetch(prompt, {
+            "model": model,
+            "duration": int(round(seconds)),
+            "aspectRatio": "9:16" if height >= width else "16:9",
+            "audio": "true" if kwargs.get("with_audio") else None,
+            "seed": kwargs.get("seed"),
+        }, output_path, seconds, model, on_progress)
+
+    def image_to_video(
+        self, image_path, prompt, output_path, seconds=5.0, motion_strength=0.7,
+        on_progress=None, **kwargs,
+    ) -> GenerationResult:
+        model = str(kwargs.get("model") or self.DEFAULT_MODEL)
+        # reference_images takes public URLs only, so a local still has to be
+        # uploaded first - which this provider does not do. Say so plainly
+        # rather than sending a data URI it will reject.
+        reference = kwargs.get("reference_image_url")
+        if not reference:
+            raise ProviderError(
+                "Pollinations image-to-video needs a public image URL; a local "
+                "file has to be uploaded somewhere reachable first."
+            )
+        return self._fetch(prompt, {
+            "model": model,
+            "duration": int(round(seconds)),
+            "reference_images": str(reference),
+            "aspectRatio": "9:16",
+        }, output_path, seconds, model, on_progress)
+
+
 class LocalMotionProvider(VideoProvider):
     """Ken Burns style motion from a still - not AI, but never a dead button.
 
@@ -656,6 +775,7 @@ def register_provider(provider: Type[VideoProvider]) -> Type[VideoProvider]:
 register_provider(PuterVideoProvider)
 register_provider(VideoForgeProvider)
 register_provider(ModelScopeProvider)
+register_provider(PollinationsProvider)
 register_provider(LocalMotionProvider)
 
 # VideoForge first: it needs no key and bills nothing, so it is the one
