@@ -60,6 +60,16 @@ class VoiceProfile:
     clone_reference: str = ""      # prepared reference WAV; empty = stock voice
     clone_language: str = ""       # what Magpie should speak, e.g. "hi-IN"
     clone_quality: int = 20        # 1..40, similarity against synthesis speed
+    # Where this character's voice should sit, in Hz, measured after synthesis.
+    #
+    # A fixed semitone offset cannot hold a cloned voice at a pitch, because
+    # the model does not return one: asked for the same line three times it
+    # came back at 181, 199 and 122 Hz - most of an octave apart. An offset
+    # applied to that lands wherever the model happened to be, which is how
+    # two characters who should sound nothing alike ended up three semitones
+    # apart. Naming the pitch and correcting to it after the fact is the only
+    # thing that keeps a cast distinct take after take.
+    target_f0: float = 0.0         # 0 = leave the model's pitch alone
 
     # Shown next to the voice when what it is needs explaining - so a label
     # never promises something the synthesiser cannot deliver.
@@ -234,6 +244,7 @@ PACK_FILENAME = "voice_packs.json"
 # outside these stops being a voice and starts being a fault report from
 # ffmpeg, so the bounds are enforced here rather than discovered at render.
 PACK_LIMITS: Dict[str, tuple] = {
+    "target_f0": (0.0, 400.0),
     "pitch_semitones": (-14.0, 8.0),
     "tempo": (0.5, 1.6),
     "lowpass_hz": (0, 20000),
@@ -428,6 +439,72 @@ def voice_keys() -> List[str]:
 # ---------------------------------------------------------------------------
 # Local shaping
 # ---------------------------------------------------------------------------
+
+
+def measure_f0(path: Path, floor: float = 60.0, ceiling: float = 500.0) -> float:
+    """Median fundamental of a recording, in Hz. 0.0 when nothing is voiced.
+
+    Autocorrelation per 40ms frame, taking the median over the voiced ones -
+    robust enough for "where does this voice sit", which is all it is for.
+    """
+    import wave  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    try:
+        with wave.open(str(path), "rb") as handle:
+            rate = handle.getframerate()
+            channels = handle.getnchannels()
+            width = handle.getsampwidth()
+            raw = handle.readframes(handle.getnframes())
+    except Exception:
+        return 0.0
+    if width != 2 or not raw or not rate:
+        return 0.0
+
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+
+    window = int(0.040 * rate)
+    hop = int(0.010 * rate)
+    low, high = int(rate / ceiling), int(rate / floor)
+    if window <= 0 or high <= low or len(samples) < window:
+        return 0.0
+
+    found: List[float] = []
+    for start in range(0, len(samples) - window, hop):
+        frame = samples[start:start + window]
+        if float(np.sqrt((frame ** 2).mean())) < 0.02:
+            continue
+        frame = frame - frame.mean()
+        correlation = np.correlate(frame, frame, "full")[window - 1:]
+        if correlation[0] <= 0:
+            continue
+        segment = correlation[low:high]
+        if not len(segment):
+            continue
+        lag = int(np.argmax(segment)) + low
+        # Below this the "peak" is noise, not a period.
+        if correlation[lag] / correlation[0] < 0.3:
+            continue
+        found.append(rate / lag)
+    return float(np.median(found)) if found else 0.0
+
+
+def semitones_to(measured: float, target: float, limit: float = 8.0) -> float:
+    """The shift that moves ``measured`` onto ``target``, clamped.
+
+    The clamp matters: a line the measurer got wrong - one word, mostly
+    breath - must not be transposed into a cartoon. Past the limit it is
+    better to be a little off the target than unrecognisable.
+    """
+    import math  # noqa: PLC0415
+
+    if measured <= 0 or target <= 0:
+        return 0.0
+    shift = 12.0 * math.log2(target / measured)
+    return max(-limit, min(limit, shift))
 
 
 def build_filter_chain(profile: VoiceProfile, sample_rate: int = 24000) -> str:

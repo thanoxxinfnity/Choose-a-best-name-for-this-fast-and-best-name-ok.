@@ -397,6 +397,74 @@ def render_text_rgba(
     return np.array(canvas)
 
 
+def _blood_drips(
+    mask: np.ndarray,
+    progress: float,
+    seed: int,
+    colour: Tuple[int, int, int],
+    font_size: int,
+) -> Image.Image:
+    """Runs of blood growing downward from the bottom edge of the letters.
+
+    Seeded from the phrase, so as ``progress`` advances the same runs simply
+    get longer. Re-rolling them per frame would boil the whole band, which is
+    the difference between blood running and static noise.
+
+    The bottom edge is read off the text's own alpha, so drips leave the
+    letters they belong to rather than a rectangle behind them.
+    """
+    height, width = mask.shape
+    layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    if progress <= 0.01:
+        return layer
+
+    lit = mask > 40
+    columns = np.where(lit.any(axis=0))[0]
+    if not len(columns):
+        return layer
+
+    # The lowest lit row per column - where a run would actually leave the ink.
+    bottoms = height - 1 - np.argmax(lit[::-1, :], axis=0)
+
+    rng = np.random.default_rng(seed)
+    spacing = max(int(font_size * 0.55), 6)
+    draw = ImageDraw.Draw(layer)
+    red, green, blue = colour
+
+    for start in range(int(columns[0]), int(columns[-1]), spacing):
+        column = start + int(rng.integers(0, max(spacing - 2, 1)))
+        if column >= width or not lit[:, column].any():
+            continue
+        # Only some columns run, and each has its own length and pace.
+        if rng.random() < 0.35:
+            continue
+        top = int(bottoms[column])
+        reach = float(font_size) * (0.45 + 1.15 * float(rng.random()))
+        pace = 0.55 + 0.45 * float(rng.random())
+        length = reach * min(max(progress * pace / 0.75, 0.0), 1.0)
+        if length < 2.0:
+            continue
+
+        thickness = max(2.0, font_size * (0.055 + 0.035 * float(rng.random())))
+        steps = max(int(length), 2)
+        for step in range(steps):
+            travel = step / max(steps - 1, 1)
+            y = top + step
+            if y >= height:
+                break
+            # A run thins as it stretches, then beads at the tip.
+            taper = thickness * (1.0 - 0.55 * travel)
+            if travel > 0.82:
+                taper = thickness * (0.45 + 1.05 * (travel - 0.82) / 0.18)
+            half = max(taper / 2.0, 0.6)
+            alpha = int(255 * (1.0 - 0.25 * travel))
+            draw.ellipse(
+                [column - half, y - half * 0.6, column + half, y + half * 0.6],
+                fill=(red, green, blue, alpha),
+            )
+    return layer
+
+
 def render_caption_phrase(
     words: Sequence[str],
     highlight: int,
@@ -405,6 +473,8 @@ def render_caption_phrase(
     color: str = "#FFFFFF",
     highlight_color: str = "#FFD400",
     stroke_color: str = "#000000",
+    bleeds: bool = False,
+    drip: float = 0.0,
 ) -> np.ndarray:
     """A short phrase with one word picked out, as a caption band.
 
@@ -454,7 +524,14 @@ def render_caption_phrase(
     width = max(line_widths, default=1) + 6 * stroke
     height = sum(line_heights) + line_gap * max(len(lines) - 1, 0) + 6 * stroke
 
-    canvas = Image.new("RGBA", (width, height + int(font_size * 0.3)), (0, 0, 0, 0))
+    # Room under the band for the blood to run into. Without it the drips are
+    # clipped at the glyph line and read as a red underline.
+    #
+    # Reserved by STYLE, not by this frame's progress: the geometry of a phrase
+    # has to be identical for every word of it, or the band changes height as
+    # the blood starts running and the whole caption jumps.
+    headroom = int(font_size * (1.9 if bleeds else 0.3))
+    canvas = Image.new("RGBA", (width, height + headroom), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
     y = 3 * stroke
@@ -472,6 +549,19 @@ def render_caption_phrase(
     glow = canvas.filter(ImageFilter.GaussianBlur(radius=max(2, font_size // 14)))
     backdrop = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     backdrop.alpha_composite(glow)
+
+    if bleeds and drip > 0.01:
+        # Under the text, so the words stay crisp and the blood runs behind
+        # them the way it would down a surface they are painted on.
+        runs = _blood_drips(
+            np.array(canvas)[:, :, 3], drip,
+            seed=abs(hash(text)) % (2 ** 31),
+            colour=_hex_to_rgb(highlight_color),
+            font_size=font_size,
+        )
+        backdrop.alpha_composite(
+            runs.filter(ImageFilter.GaussianBlur(radius=max(1, font_size // 40))))
+
     backdrop.alpha_composite(canvas)
     return np.array(backdrop)
 
@@ -1846,6 +1936,7 @@ class VideoRenderer:
         base_colour = style.color or "#FFFFFF"
         lit_colour = style.highlight_color or "#FFD400"
         max_width = int(self.width * 0.9)
+        bleeding = (style.style or "").strip().lower() in ("blood", "blood_drip")
         layers: List[Any] = []
 
         usable = [word for word in words if word.text.strip()]
@@ -1876,11 +1967,19 @@ class VideoRenderer:
                     end = float(word.end)
                 end = min(max(end, start + 0.12), duration)
 
+                # Blood runs as the phrase is spoken: the first word starts
+                # clean and by the last one it is dripping. Tying it to the
+                # word rather than to the clock means it always finishes with
+                # the line, however long the line took to say.
+                drip = 0.0
+                if bleeding:
+                    drip = (position_in_phrase + 1) / len(phrase)
+
                 try:
                     array = render_caption_phrase(
                         texts, position_in_phrase, max_width=max_width,
                         font_size=font_size, color=base_colour,
-                        highlight_color=lit_colour,
+                        highlight_color=lit_colour, bleeds=bleeding, drip=drip,
                     )
                 except Exception:
                     continue

@@ -60,7 +60,13 @@ logger = logging.getLogger(__name__)
 
 # The catalogue moved to voices.py so a profile can carry its shaping chain
 # (pitch, timbre, reverb) alongside the provider voice id.
-from voices import VoiceProfile, resolve_voice as resolve_voice_profile, shape_voice
+from voices import (
+    VoiceProfile,
+    measure_f0,
+    resolve_voice as resolve_voice_profile,
+    semitones_to,
+    shape_voice,
+)
 
 # Polly rejects requests above ~3000 characters, so long scripts are chunked.
 TTS_CHUNK_CHARS = 2800
@@ -398,7 +404,33 @@ class PuterClient:
                 )
             except MagpieUnavailable as exc:
                 raise PuterError(str(exc)) from exc
-            shaped = replace(profile, tempo=profile.tempo * max(float(speed), 0.1))
+
+            pitch = profile.pitch_semitones
+            if profile.target_f0 > 0:
+                # The model does not return a consistent pitch, so the shift is
+                # computed against what it actually produced this time rather
+                # than assumed. Without this two characters drift into each
+                # other from one take to the next.
+                measured = measure_f0(raw)
+                if measured > 0:
+                    pitch = semitones_to(measured, profile.target_f0)
+                    logger.info(
+                        "Magpie pitch: %s came back at %.0fHz, moving %+.2f "
+                        "semitones onto its %.0fHz mark",
+                        profile.key, measured, pitch, profile.target_f0,
+                    )
+                else:
+                    self_note = (
+                        f"Could not measure the pitch of '{profile.key}'; left it "
+                        f"where the model put it."
+                    )
+                    logger.warning(self_note)
+
+            shaped = replace(
+                profile,
+                pitch_semitones=pitch,
+                tempo=profile.tempo * max(float(speed), 0.1),
+            )
             shape_voice(raw, output_path, shaped, ffmpeg=ffmpeg_binary(),
                         audio_bitrate=settings.audio_bitrate)
         return output_path
