@@ -423,6 +423,158 @@ class VideoForgeProvider(VideoProvider):
                          "z-ai/image2video", on_progress)
 
 
+class ModelScopeProvider(VideoProvider):
+    """Alibaba's ModelScope, which serves Wan and friends on a free daily quota.
+
+    The reason it is here: of everything checked, this is the only route that
+    is free at a volume worth having. NVIDIA NIM has no video model at all -
+    its catalogue carries text-to-image, video *understanding* and an AI-video
+    *detector*, and nothing that generates. Google's Veo has no free API tier.
+    Hugging Face routes to the same open models but gives a free account $0.10
+    of credit a month, which is about one clip. ModelScope's free tier is
+    counted in requests per day rather than cents per month.
+
+    Submission is asynchronous: the POST returns a task id, and the task is
+    polled on a header-gated endpoint until the video URL appears.
+    """
+
+    key = "modelscope"
+    label = "ModelScope (Wan 2.2)"
+    supports_text_to_video = True
+    supports_image_to_video = True
+    requires_key = True
+
+    BASE = "https://api-inference.modelscope.cn"
+    DEFAULT_MODEL = "Wan-AI/Wan2.2-T2V-A14B"
+    DEFAULT_I2V_MODEL = "Wan-AI/Wan2.2-I2V-A14B"
+
+    def models(self) -> List[str]:
+        return [self.DEFAULT_MODEL, self.DEFAULT_I2V_MODEL]
+
+    def notes(self) -> str:
+        return (
+            "Free daily quota rather than a credit balance. Needs a ModelScope "
+            "account token (free) from modelscope.cn; renders are queued, so a "
+            "clip takes minutes rather than seconds."
+        )
+
+    def _headers(self, asynchronous: bool = True) -> Dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if asynchronous:
+            # Without this the request is served synchronously and a long
+            # render dies holding the connection open.
+            headers["X-ModelScope-Async-Mode"] = "true"
+        return headers
+
+    def _submit(self, payload: Dict[str, object]) -> str:
+        response = requests.post(
+            f"{self.BASE}/v1/videos/generations",
+            headers=self._headers(), json=payload, timeout=120,
+        )
+        if response.status_code >= 400:
+            raise ProviderError(
+                f"ModelScope rejected the request: HTTP {response.status_code} "
+                f"{response.text[:200]}"
+            )
+        body = response.json()
+        task_id = str(body.get("task_id") or body.get("id") or "").strip()
+        if not task_id:
+            raise ProviderError(f"ModelScope returned no task id: {response.text[:200]}")
+        return task_id
+
+    def _await(self, task_id: str, report: Callable[[str, float], None],
+               timeout: float) -> str:
+        deadline = time.time() + timeout
+        seen = ""
+        while time.time() < deadline:
+            time.sleep(5.0)
+            response = requests.get(
+                f"{self.BASE}/v1/tasks/{task_id}",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "X-ModelScope-Task-Type": "image_generation"},
+                timeout=60,
+            )
+            if response.status_code >= 400:
+                raise ProviderError(
+                    f"ModelScope task {task_id}: HTTP {response.status_code} "
+                    f"{response.text[:200]}"
+                )
+            node = response.json()
+            status = str(node.get("task_status") or node.get("status") or "").upper()
+            if status != seen:
+                seen = status
+                report(f"{status.lower() or 'working'}", 0.3 if status == "PENDING" else 0.6)
+            if status in ("SUCCEED", "SUCCEEDED", "SUCCESS"):
+                urls = node.get("output_video_url") or node.get("output_videos") or []
+                if isinstance(urls, str):
+                    return urls
+                if urls:
+                    return str(urls[0])
+                raise ProviderError(
+                    f"ModelScope finished task {task_id} with no video url: "
+                    f"{str(node)[:200]}"
+                )
+            if status in ("FAILED", "FAIL", "ERROR"):
+                raise ProviderError(
+                    f"ModelScope failed: {node.get('message') or node.get('errors') or status}"
+                )
+        raise ProviderError(
+            f"ModelScope task {task_id} did not finish within {timeout:.0f}s."
+        )
+
+    def _run(self, payload, output_path, seconds, prompt, model, on_progress,
+             timeout: float = 900.0) -> GenerationResult:
+        if not self.api_key:
+            raise ProviderError(
+                "ModelScope needs a free account token; add it in Settings."
+            )
+        started = time.time()
+        report = self._reporter(on_progress, started)
+        report("submitting", 0.05)
+        task_id = self._submit(payload)
+        url = self._await(task_id, report, timeout)
+
+        report("downloading", 0.9)
+        video = requests.get(url, timeout=300)
+        if video.status_code >= 400 or len(video.content) < 1024:
+            raise ProviderError(
+                f"ModelScope produced no file: HTTP {video.status_code}, "
+                f"{len(video.content)} bytes"
+            )
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(video.content)
+        report("done", 1.0)
+        return GenerationResult(
+            path=output_path, provider=self.key, model=model, seconds=seconds,
+            prompt=prompt, elapsed=time.time() - started,
+        )
+
+    def text_to_video(
+        self, prompt, output_path, seconds=5.0, resolution="720x1280",
+        on_progress=None, **kwargs,
+    ) -> GenerationResult:
+        model = str(kwargs.get("model") or self.DEFAULT_MODEL)
+        return self._run(
+            {"model": model, "prompt": prompt},
+            output_path, seconds, prompt, model, on_progress,
+        )
+
+    def image_to_video(
+        self, image_path, prompt, output_path, seconds=5.0, motion_strength=0.7,
+        on_progress=None, **kwargs,
+    ) -> GenerationResult:
+        model = str(kwargs.get("model") or self.DEFAULT_I2V_MODEL)
+        return self._run(
+            {"model": model, "prompt": prompt,
+             "image_url": _to_data_uri(Path(image_path))},
+            output_path, seconds, prompt, model, on_progress,
+        )
+
+
 class LocalMotionProvider(VideoProvider):
     """Ken Burns style motion from a still - not AI, but never a dead button.
 
@@ -503,6 +655,7 @@ def register_provider(provider: Type[VideoProvider]) -> Type[VideoProvider]:
 
 register_provider(PuterVideoProvider)
 register_provider(VideoForgeProvider)
+register_provider(ModelScopeProvider)
 register_provider(LocalMotionProvider)
 
 # VideoForge first: it needs no key and bills nothing, so it is the one

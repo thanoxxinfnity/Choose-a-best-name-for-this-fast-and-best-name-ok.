@@ -255,3 +255,91 @@ def test_the_wait_outlasts_the_services_own_retry_ladder():
     from config import settings
 
     assert settings.videoforge_timeout > (90 + 240 + 600 + 900)
+
+
+# --------------------------------------------------------- ModelScope -------
+
+def test_modelscope_is_registered_and_asks_for_a_key():
+    from video_providers import ModelScopeProvider, provider_keys
+
+    assert "modelscope" in provider_keys()
+    info = ModelScopeProvider(api_key="").info()
+    assert info.text_to_video and info.image_to_video
+    assert info.requires_key and not info.configured
+    assert "free" in info.notes.lower()
+
+
+def test_modelscope_says_what_is_missing_rather_than_calling_out():
+    """Without a token it must not reach the network to find that out."""
+    from video_providers import ModelScopeProvider, ProviderError
+
+    provider = ModelScopeProvider(api_key="")
+    with pytest.raises(ProviderError, match="free account token"):
+        provider.text_to_video("anything", Path("/tmp/never-written.mp4"))
+
+
+def test_modelscope_submits_asynchronously(monkeypatch, tmp_path):
+    """A synchronous render holds the connection open and dies through a proxy."""
+    import video_providers
+
+    seen = {}
+
+    class _Response:
+        status_code = 200
+
+        def __init__(self, payload=None, content=b""):
+            self._payload = payload or {}
+            self.content = content
+            self.text = ""
+
+        def json(self):
+            return self._payload
+
+    def _post(url, headers=None, json=None, timeout=None):
+        seen["headers"] = headers or {}
+        seen["payload"] = json or {}
+        return _Response({"task_id": "t-1"})
+
+    def _get(url, headers=None, timeout=None):
+        if "/tasks/" in url:
+            return _Response({"task_status": "SUCCEED",
+                              "output_video_url": ["https://example.test/v.mp4"]})
+        return _Response(content=b"x" * 4096)
+
+    monkeypatch.setattr(video_providers.requests, "post", _post)
+    monkeypatch.setattr(video_providers.requests, "get", _get)
+    monkeypatch.setattr(video_providers.time, "sleep", lambda _s: None)
+
+    provider = video_providers.ModelScopeProvider(api_key="token")
+    result = provider.text_to_video("a red cube", tmp_path / "out.mp4")
+
+    assert seen["headers"].get("X-ModelScope-Async-Mode") == "true"
+    assert seen["payload"]["model"] == provider.DEFAULT_MODEL
+    assert result.path.exists() and result.path.stat().st_size == 4096
+
+
+def test_modelscope_reports_a_failed_task_with_its_reason(monkeypatch, tmp_path):
+    import video_providers
+    from video_providers import ProviderError
+
+    class _Response:
+        status_code = 200
+        text = ""
+        content = b""
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    monkeypatch.setattr(video_providers.requests, "post",
+                        lambda *a, **k: _Response({"task_id": "t-9"}))
+    monkeypatch.setattr(video_providers.requests, "get",
+                        lambda *a, **k: _Response({"task_status": "FAILED",
+                                                   "message": "quota exhausted"}))
+    monkeypatch.setattr(video_providers.time, "sleep", lambda _s: None)
+
+    provider = video_providers.ModelScopeProvider(api_key="token")
+    with pytest.raises(ProviderError, match="quota exhausted"):
+        provider.text_to_video("a red cube", tmp_path / "out.mp4")
