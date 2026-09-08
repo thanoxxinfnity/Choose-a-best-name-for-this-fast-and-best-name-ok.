@@ -88,6 +88,7 @@ class JobRequest:
     auto_silence_cut: bool = False
     auto_beat_sync: bool = False
     auto_reframe: bool = False
+    match_grade: bool = True
     enable_sfx: bool = True
     enable_transitions: bool = True
     # Long source in, short clip out: find the moment before editing it.
@@ -625,6 +626,7 @@ class JobManager:
                 auto_reframe=request.auto_reframe,
                 enable_sfx=request.enable_sfx,
                 enable_transitions=request.enable_transitions,
+                match_grade=request.match_grade,
                 export=export.key,
             )
             output = self.output_path(job_id)

@@ -44,6 +44,8 @@ from puter_video import (
 from ae_style import select_accent_hits
 from export_presets import DEFAULT_PRESET, ExportPreset, resolve_preset
 from micro_features import ReframeTrack, plan_reframe
+from anime_fx import impact_frame
+from shot_doctor import grade_distance, match_colour
 from motion_graphics import (
     TRANSITIONS,
     TitleStyle,
@@ -729,6 +731,7 @@ class VideoRenderer:
         export: Optional[str] = None,
         enable_sfx: bool = True,
         enable_transitions: bool = True,
+        match_grade: bool = True,
     ) -> None:
         self.export: ExportPreset = resolve_preset(export or DEFAULT_PRESET)
         self.theme: Theme = resolve_theme(theme)
@@ -736,7 +739,9 @@ class VideoRenderer:
         self.auto_reframe = auto_reframe
         self.enable_sfx = enable_sfx
         self.enable_transitions = enable_transitions
+        self.match_grade = match_grade
         self._transitions_used = 0
+        self._impact_frames_used = 0
         self._reframe_tracks: Dict[int, Optional[ReframeTrack]] = {}
         self.plan = plan
         self.clip_paths = [Path(path) for path in clip_paths]
@@ -912,6 +917,11 @@ class VideoRenderer:
             # describe the source, not the cut.
             elapsed = sum(_duration_of(piece) for piece in segment_clips)
 
+            punch = self._impact_frame_clip(index, segment)
+            if punch is not None:
+                segment_clips.append(punch)
+                elapsed += _duration_of(punch)
+
             bridge = self._build_transition(index, segment, segment_clips, incoming)
             if bridge is not None:
                 segment_clips.append(bridge)
@@ -932,6 +942,9 @@ class VideoRenderer:
         if not segment_clips:
             raise RenderError("Every timeline segment failed to build.")
 
+        if self.match_grade and len(segment_clips) > 1:
+            segment_clips = self._match_grades(segment_clips)
+
         self.report(JobStage.RENDERING, 0.62, "Concatenating the timeline")
         base = concatenate_videoclips(segment_clips, method="compose")
         base = _with_fps(base, self.fps)
@@ -940,6 +953,94 @@ class VideoRenderer:
         base_path = self.workspace / "base.mp4"
         self._write_video(base, base_path, with_audio=True)
         return base_path
+
+    def _match_grades(self, clips: List[Any]) -> List[Any]:
+        """Pull every shot toward the edit's own average colour.
+
+        Mixing sources is what an edit like this is made of - a generated
+        still, a clip from one model, a clip from another, footage off a
+        phone - and each arrives graded for a different scene. Cut together
+        untouched, the colour jumps at every cut and the edit reads as a
+        folder rather than a film.
+
+        The reference is the middle shot rather than the first: the first is
+        often a title card or a black open, and grading a whole edit to that
+        is worse than not grading it at all. Correction is partial on purpose,
+        because pulling every shot the whole way makes them all the same
+        colour and throws away the contrast between them.
+        """
+        middle = clips[len(clips) // 2]
+        try:
+            reference = np.asarray(middle.get_frame(_duration_of(middle) * 0.5),
+                                   dtype=np.uint8)[:, :, ::-1]
+        except Exception as exc:
+            self.warn(f"Could not read a reference frame for grade matching: {exc}")
+            return clips
+
+        moved = 0
+        out: List[Any] = []
+        for clip in clips:
+            try:
+                sample = np.asarray(clip.get_frame(_duration_of(clip) * 0.5),
+                                    dtype=np.uint8)[:, :, ::-1]
+                distance = grade_distance(sample, reference)
+            except Exception:
+                out.append(clip)
+                continue
+            # Below this the shots already belong together and touching them
+            # only costs quality.
+            if distance < 4.0:
+                out.append(clip)
+                continue
+            moved += 1
+
+            def correct(frame, _t, ref=reference):
+                bgr = np.asarray(frame, dtype=np.uint8)[:, :, ::-1]
+                return match_colour(bgr, ref, strength=0.45)[:, :, ::-1]
+
+            out.append(self._track(apply_frame_effect(clip, correct)))
+
+        if moved:
+            self.report(JobStage.RENDERING, 0.61,
+                        f"Matching the grade of {moved} shot(s) to the edit")
+        return out
+
+    def _impact_frame_clip(self, index: int, segment: TimelineSegment):
+        """Two frames of drawn abstraction, spliced at a hard cut.
+
+        The single most recognisable move in the style, and the one most often
+        done wrong: it is not a white card, which reads as a dropped frame, and
+        it is not held - two frames at 60fps is thirty milliseconds, which the
+        eye registers as force rather than as a shot.
+
+        Rationed to hard cuts and zoom punches. A crossfade is a soft join and
+        splicing an impact into the middle of one fights it; a whip pan already
+        carries the energy this would add.
+        """
+        strength = float(self.theme.impact_frames or 0.0)
+        if strength <= 0.01 or index == 0:
+            return None
+        if (segment.cut_type or "").lower() not in ("hard_cut", "jump_cut", "zoom_punch"):
+            return None
+        # Deterministic per cut, so a re-render of the same plan is the same
+        # edit rather than a different one.
+        if ((index * 2654435761) & 0xFFFF) / 0xFFFF > strength:
+            return None
+
+        try:
+            frame = impact_frame(
+                (self.width, self.height), seed=index * 17,
+                style=self.theme.impact_style or "burst",
+                colour=_hex_to_rgb(self.theme.text_colour or "#FFFFFF"),
+            )
+        except Exception as exc:
+            self.warn(f"Impact frame at cut {index + 1} could not be drawn: {exc}")
+            return None
+
+        self._impact_frames_used += 1
+        held = max(2.0 / max(self.fps, 1), 1.0 / 60.0)
+        clip = _clip_from_rgba(np.dstack([frame, np.full(frame.shape[:2], 255, np.uint8)]))
+        return self._track(_with_fps(_with_duration(clip, held), self.fps))
 
     def _build_transition(
         self, index: int, segment: TimelineSegment, built: List[Any], incoming: Any
@@ -1592,6 +1693,16 @@ class VideoRenderer:
             spark_hits=flash_hits if self.theme.sparks else [],
             spark_amount=self.theme.sparks,
             spark_colour=self.theme.spark_colour,
+            # The drawn vocabulary rides the same accented hits. Putting ink on
+            # every beat makes it a texture the eye stops seeing; putting it on
+            # the hits that already flash is what makes those hits land.
+            line_hits=flash_hits if self.theme.speed_lines else [],
+            line_amount=self.theme.speed_lines,
+            tint_hits=flash_hits if self.theme.accent_tint else [],
+            tint_amount=self.theme.accent_tint,
+            tint_colour=self.theme.tint_colour,
+            leak_amount=self.theme.light_leak,
+            leak_colour=self.theme.leak_colour,
         )
         if effect is None:
             return clip
@@ -1602,6 +1713,12 @@ class VideoRenderer:
             detail.append(f"{len(flash_hits)} impact flashes")
         if self.theme.sparks and flash_hits:
             detail.append("sparks")
+        if self.theme.speed_lines and flash_hits:
+            detail.append("speed lines")
+        if self.theme.accent_tint and flash_hits:
+            detail.append("accent flashes")
+        if self.theme.light_leak:
+            detail.append("light leak")
         self.report(
             JobStage.RENDERING, 0.78,
             f"Applying '{self.theme.name}' look"

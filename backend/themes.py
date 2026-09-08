@@ -52,6 +52,19 @@ class Theme:
     text_style: str = "3d_pop"
     text_colour: str = "#FFFFFF"
     caption_highlight: str = "#FFD400"
+    # --- the anime-edit vocabulary -----------------------------------------
+    # Drawn ink on the accented hits, an accent tint under the white flash, and
+    # one leak crossing the whole edit. All rationed to the accents rather than
+    # every beat: an effect on every hit is a texture, not an accent.
+    speed_lines: float = 0.0       # 0..1, radial ink on a hit
+    accent_tint: float = 0.0       # 0..1, colour flash under the impact
+    tint_colour: Tuple[int, int, int] = (193, 18, 31)
+    light_leak: float = 0.0        # 0..1, one sweep across the edit
+    leak_colour: Tuple[int, int, int] = (120, 190, 255)
+    # An abstract frame spliced at a cut, and how often a cut earns one.
+    impact_frames: float = 0.0     # 0..1, chance-weighted per accented cut
+    impact_style: str = "burst"    # burst | crack | slash
+
     sticker_animation: str = "pop_up"
     sticker_scale: float = 1.0
 
@@ -92,6 +105,8 @@ THEMES: Dict[str, Theme] = {
         caption_highlight="#FFD400",
     ),
     "anime_edits": Theme(
+        speed_lines=0.75, accent_tint=0.35, tint_colour=(255, 60, 90),
+        impact_frames=0.6, impact_style="burst",
         key="anime_edits",
         name="Anime Edits",
         description=(
@@ -119,6 +134,8 @@ THEMES: Dict[str, Theme] = {
         sticker_scale=1.1,
     ),
     "haunted": Theme(
+        accent_tint=0.3, tint_colour=(90, 200, 140), impact_frames=0.35,
+        impact_style="crack",
         key="haunted",
         name="Haunted Mode",
         description=(
@@ -168,6 +185,9 @@ THEMES: Dict[str, Theme] = {
         sticker_scale=1.15,
     ),
     "ae_hype": Theme(
+        speed_lines=0.6, accent_tint=0.4, tint_colour=(193, 18, 31),
+        light_leak=0.35, leak_colour=(150, 120, 255),
+        impact_frames=0.5, impact_style="slash",
         key="ae_hype",
         name="AE Hype Edit",
         description=(

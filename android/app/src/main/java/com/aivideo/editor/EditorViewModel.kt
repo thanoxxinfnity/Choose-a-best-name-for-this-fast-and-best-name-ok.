@@ -33,6 +33,7 @@ data class EditorUiState(
     val autoSilenceCut: Boolean = false,
     val autoBeatSync: Boolean = false,
     val autoReframe: Boolean = false,
+    val matchGrade: Boolean = true,
     val enableSfx: Boolean = true,
     val enableTransitions: Boolean = true,
     val autoHighlight: Boolean = true,
@@ -155,6 +156,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun setAutoBeatSync(value: Boolean) = _state.update { it.copy(autoBeatSync = value) }
 
     fun setAutoReframe(value: Boolean) = _state.update { it.copy(autoReframe = value) }
+    fun setMatchGrade(value: Boolean) = _state.update { it.copy(matchGrade = value) }
     fun setEnableSfx(value: Boolean) = _state.update { it.copy(enableSfx = value) }
     fun setEnableTransitions(value: Boolean) = _state.update { it.copy(enableTransitions = value) }
     fun setAutoHighlight(value: Boolean) = _state.update { it.copy(autoHighlight = value) }
@@ -274,6 +276,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     autoSilenceCut = current.autoSilenceCut,
                     autoBeatSync = current.autoBeatSync,
                     autoReframe = current.autoReframe,
+                    matchGrade = current.matchGrade,
                     enableSfx = current.enableSfx,
                     enableTransitions = current.enableTransitions,
                     autoHighlight = current.autoHighlight,

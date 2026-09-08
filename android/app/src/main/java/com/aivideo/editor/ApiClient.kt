@@ -303,6 +303,7 @@ object ApiClient {
         autoSilenceCut: Boolean = false,
         autoBeatSync: Boolean = false,
         autoReframe: Boolean = false,
+        matchGrade: Boolean = true,
         enableSfx: Boolean = true,
         enableTransitions: Boolean = true,
         autoHighlight: Boolean = true,
@@ -333,6 +334,7 @@ object ApiClient {
             addFormDataPart("auto_silence_cut", autoSilenceCut.toString())
             addFormDataPart("auto_beat_sync", autoBeatSync.toString())
             addFormDataPart("auto_reframe", autoReframe.toString())
+            addFormDataPart("match_grade", matchGrade.toString())
             addFormDataPart("enable_sfx", enableSfx.toString())
             addFormDataPart("enable_transitions", enableTransitions.toString())
             addFormDataPart("auto_highlight", autoHighlight.toString())

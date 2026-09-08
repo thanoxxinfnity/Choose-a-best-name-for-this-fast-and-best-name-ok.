@@ -49,6 +49,7 @@ SWITCHES = {
     "auto_silence_cut": None,
     "auto_beat_sync": None,
     "auto_reframe": "auto_reframe",
+    "match_grade": "match_grade",
     "enable_sfx": "enable_sfx",
     "enable_transitions": "enable_transitions",
     "auto_highlight": None,
@@ -125,6 +126,7 @@ UI_TOGGLES = {
     "enableTransitions": "setEnableTransitions",
     "autoHighlight": "setAutoHighlight",
     "reviewPlan": "setReviewPlan",
+    "matchGrade": "setMatchGrade",
 }
 
 

@@ -515,6 +515,13 @@ fun EditorScreen(
                     onCheckedChange = viewModel::setAutoReframe,
                 )
                 ToggleRow(
+                    title = "Match the grade",
+                    subtitle = "Pulls every shot toward one colour, so mixed sources " +
+                        "stop looking like a folder of clips",
+                    checked = state.matchGrade,
+                    onCheckedChange = viewModel::setMatchGrade,
+                )
+                ToggleRow(
                     title = "Review the cut",
                     subtitle = "Reads the timeline back, repairs it, and sends what is left to Kimi",
                     checked = state.reviewPlan,

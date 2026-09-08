@@ -217,3 +217,58 @@ def test_a_stutter_can_start_partway_in():
 
 def test_an_empty_clip_stutters_into_nothing():
     assert stutter_indices(0, Stutter()) == []
+
+
+# ------------------------------------------------------------ wiring -------
+
+def test_the_new_effects_reach_the_frame_chain():
+    """A library nothing calls does nothing for the edit."""
+    from vfx import build_effect_chain
+
+    frame = _frame(60, 120, 80)
+    chain = build_effect_chain(line_hits=[0.5], line_amount=0.8,
+                               tint_hits=[1.0], tint_amount=0.7,
+                               leak_amount=0.6, duration=2.0)
+    assert chain is not None
+    quiet = chain(frame, 0.2).mean()
+    on_lines = chain(frame, 0.5).mean()
+    on_tint = chain(frame, 1.0).mean()
+    assert on_lines > quiet + 20, "speed lines did not fire on their hit"
+    assert on_tint > quiet + 5, "the accent tint did not fire on its hit"
+
+
+def test_the_chain_is_still_none_when_nothing_is_asked_for():
+    from vfx import build_effect_chain
+
+    assert build_effect_chain() is None
+
+
+def test_speed_lines_decay_rather_than_hold():
+    """Ink that stays for a second is a texture, not a hit."""
+    from vfx import build_effect_chain
+
+    frame = _frame(60, 120, 80)
+    chain = build_effect_chain(line_hits=[0.5], line_amount=0.9, duration=3.0)
+    assert chain(frame, 0.51).mean() > chain(frame, 0.68).mean()
+
+
+def test_the_anime_themes_actually_ask_for_the_new_effects():
+    from themes import THEMES
+
+    hype = THEMES["ae_hype"]
+    assert hype.speed_lines > 0 and hype.accent_tint > 0
+    assert hype.impact_frames > 0
+    # A plain theme must stay plain.
+    assert THEMES["normal"].speed_lines == 0
+    assert THEMES["normal"].impact_frames == 0
+
+
+def test_an_impact_frame_is_only_spliced_at_a_hard_cut():
+    """A crossfade is a soft join; an impact spliced into one fights it."""
+    import inspect
+
+    import video_renderer
+
+    body = inspect.getsource(video_renderer.VideoRenderer._impact_frame_clip)
+    assert '"hard_cut", "jump_cut", "zoom_punch"' in body
+    assert "index == 0" in body, "the first shot has no cut to punch"

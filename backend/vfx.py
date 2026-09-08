@@ -282,6 +282,8 @@ def depth_composite(
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
+from anime_fx import colour_flash, light_leak, speed_lines  # noqa: E402
+
 _VIGNETTE_CACHE: dict = {}
 
 
@@ -439,18 +441,33 @@ def build_effect_chain(
     spark_amount: float = 0.0,
     spark_colour: Tuple[int, int, int] = (255, 236, 190),
     spark_life: float = 0.45,
+    line_hits: Sequence[float] = (),
+    line_amount: float = 0.0,
+    line_life: float = 0.22,
+    tint_hits: Sequence[float] = (),
+    tint_amount: float = 0.0,
+    tint_colour: Tuple[int, int, int] = (193, 18, 31),
+    tint_life: float = 0.18,
+    leak_amount: float = 0.0,
+    leak_colour: Tuple[int, int, int] = (120, 190, 255),
 ) -> Optional[Callable[[Frame, float], Frame]]:
     """Compose the per-frame effects a theme asks for into one callable."""
     wants_flash = flash_strength > 0 and bool(flash_hits)
     wants_drift = drift_zoom > 0 and duration > 0
     wants_sparks = spark_amount > 0 and bool(spark_hits)
+    wants_lines = line_amount > 0 and bool(line_hits)
+    wants_tint = tint_amount > 0 and bool(tint_hits)
+    wants_leak = leak_amount > 0 and duration > 0
     if (shake is None and not grade and vignette_strength <= 0 and bloom <= 0
             and pop <= 0 and base_rgb_split <= 0 and not wants_flash
-            and not wants_drift and not wants_sparks):
+            and not wants_drift and not wants_sparks and not wants_lines
+            and not wants_tint and not wants_leak):
         return None
     seed = 0.0
     hits = tuple(flash_hits or ())
     sparks = tuple(sorted(spark_hits or ()))
+    lines = tuple(sorted(line_hits or ()))
+    tints = tuple(sorted(tint_hits or ()))
 
     def effect(frame: Frame, t: float) -> Frame:
         out = frame
@@ -480,6 +497,22 @@ def build_effect_chain(
             out = glow_bloom(out, bloom)
         if vignette_strength > 0:
             out = vignette(out, vignette_strength)
+        # Speed lines are drawn ink over the graded picture, and they decay
+        # fast - they belong to the frame the hit lands on and the one after,
+        # not to the second that follows it.
+        if wants_lines:
+            for hit in lines:
+                age = t - hit
+                if 0.0 <= age <= line_life:
+                    fade = 1.0 - (age / line_life)
+                    out = speed_lines(out, line_amount * fade,
+                                      seed=int(hit * 997) & 0xFFFF)
+                    break
+        # A leak crosses the whole edit once rather than per shot, so it reads
+        # as light on the lens instead of a per-cut effect.
+        if wants_leak:
+            out = light_leak(out, min(max(t / duration, 0.0), 1.0),
+                             seed=11, colour=leak_colour)
         # Sparks are lit objects in the shot, so they are added before the
         # flash blows the frame out - otherwise they read as dirt on the lens
         # that the flash cannot reach.
@@ -492,6 +525,15 @@ def build_effect_chain(
                         count=max(6, int(34 * spark_amount)),
                         seed=int(hit * 1000) & 0xFFFF, colour=spark_colour,
                     )
+                    break
+        # A colour flash sits under the white one: the accent tints the frame,
+        # then the impact blows it out. The other order loses the colour.
+        if wants_tint:
+            for hit in tints:
+                age = t - hit
+                if 0.0 <= age <= tint_life:
+                    out = colour_flash(out, tint_amount * (1.0 - age / tint_life),
+                                       colour=tint_colour)
                     break
         # The flash goes last so it burns the graded picture, not the raw one.
         if wants_flash:
