@@ -332,6 +332,23 @@ def extruded_title(
     cap = font_size or int(height * 0.19)
     font = _load_font(cap, devanagari=_has_devanagari(letters))
 
+    # Shrink to fit. The size was fixed regardless of how long the word was, so
+    # a short title sat comfortably and a long one ran off both edges and got
+    # clipped by the canvas - "KING OF CURSES" arrived as "ING OF CURSES". The
+    # overshoot has to be in the measurement too, because the punch is at its
+    # widest exactly when the type is largest.
+    usable = max(width - max(8, cap // 4), 8)
+    peak = max(style.overshoot, 1.0)
+    for _attempt in range(12):
+        measure = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
+        span = measure.textbbox((0, 0), letters, font=font,
+                                stroke_width=max(2, cap // 12))
+        needed = (span[2] - span[0]) * peak
+        if needed <= usable or cap <= 12:
+            break
+        cap = max(12, int(cap * min(0.92, usable / max(needed, 1.0))))
+        font = _load_font(cap, devanagari=_has_devanagari(letters))
+
     # Punch: overshoot then settle. Scale is applied to the rendered stamp so
     # the extrusion scales with the face rather than detaching from it.
     if progress < 0.45:

@@ -331,3 +331,58 @@ def test_a_hex_colour_that_makes_no_sense_falls_back_instead_of_failing():
     assert _hex_to_rgb("chartreuse") == (255, 255, 255)
     assert _hex_to_rgb("") == (255, 255, 255)
     assert _hex_to_rgb("#GGGGGG") == (255, 255, 255)
+
+
+# ------------------------------------------------------- titles that fit ----
+
+def _title_span(text: str, box, progress: float, cap: int):
+    """Left and right extent of the drawn type, in pixels."""
+    from motion_graphics import TitleStyle, extruded_title
+
+    array = extruded_title(text, box, progress,
+                           style=TitleStyle(color=(193, 18, 31)), font_size=cap)
+    columns = np.where((array[:, :, 3] > 30).any(axis=0))[0]
+    return (int(columns.min()), int(columns.max())) if len(columns) else None
+
+
+def test_a_long_title_is_shrunk_rather_than_clipped():
+    """"KING OF CURSES" rendered as "ING OF CURSES" in a real edit.
+
+    The size was fixed regardless of the word's length, so a long title ran
+    off both edges and the canvas cut it.
+    """
+    box = (648, 384)
+    span = _title_span("KING OF CURSES", box, 1.0, 71)
+    assert span is not None
+    assert span[0] >= 0 and span[1] <= box[0] - 1, f"title spans {span} of {box[0]}"
+
+
+def test_the_overshoot_of_the_punch_is_inside_the_frame_too():
+    """The type is widest mid-punch, which is exactly when it used to clip."""
+    box = (648, 384)
+    for progress in (0.3, 0.45, 0.6, 1.0):
+        span = _title_span("THE KING OF CURSES RETURNS", box, progress, 71)
+        if span is None:
+            continue
+        assert span[0] >= 0 and span[1] <= box[0] - 1, (
+            f"clipped at progress {progress}: {span}"
+        )
+
+
+def test_a_short_title_is_not_shrunk_for_no_reason():
+    """Fitting must not cost a short word its size."""
+    box = (648, 384)
+    short = _title_span("GOJO", box, 1.0, 71)
+    long = _title_span("KING OF CURSES", box, 1.0, 71)
+    assert short is not None and long is not None
+    # The short one stays comfortably inside; the long one uses the room.
+    assert (short[1] - short[0]) < (long[1] - long[0])
+    assert (short[1] - short[0]) > box[0] * 0.2, "the short title was over-shrunk"
+
+
+@pytest.mark.parametrize("text", ["GOJO", "SUKUNA", "SHINJUKU", "THE STRONGEST",
+                                  "KING OF CURSES"])
+def test_every_title_used_in_a_real_edit_fits(text):
+    box = (648, 384)
+    span = _title_span(text, box, 1.0, 71)
+    assert span is not None and span[0] >= 0 and span[1] <= box[0] - 1
