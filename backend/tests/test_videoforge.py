@@ -419,3 +419,98 @@ def test_pollinations_image_to_video_needs_a_reachable_still(tmp_path):
     with pytest.raises(ProviderError, match="public image URL"):
         provider.image_to_video(tmp_path / "still.png", "move it",
                                 tmp_path / "out.mp4")
+
+
+# ------------------------------------------- holding a character steady -----
+
+def test_a_reference_url_is_stable_for_one_prompt_and_seed():
+    """The same character must come back byte for byte, or it is not a reference."""
+    from video_providers import PollinationsProvider
+
+    a = PollinationsProvider.reference_url("a white haired sorcerer", seed=21)
+    b = PollinationsProvider.reference_url("a white haired sorcerer", seed=21)
+    c = PollinationsProvider.reference_url("a white haired sorcerer", seed=22)
+    assert a == b and a != c
+    assert a.startswith(PollinationsProvider.BASE)
+    assert "seed=21" in a
+
+
+def test_only_reference_capable_models_are_accepted(tmp_path):
+    """wan-fast makes a different character every call; that is the whole bug."""
+    from video_providers import PollinationsProvider, ProviderError
+
+    provider = PollinationsProvider(api_key="sk_test")
+    with pytest.raises(ProviderError, match="does not take reference media"):
+        provider.image_to_video(tmp_path / "s.png", "move", tmp_path / "o.mp4",
+                                model="wan-fast",
+                                reference_image_url="https://example.test/a.png")
+
+
+def test_a_reference_that_will_not_prime_is_refused(monkeypatch, tmp_path):
+    """An unprimed URL reaches the model as a 401 and the character vanishes."""
+    import video_providers
+    from video_providers import ProviderError
+
+    class _Denied:
+        status_code = 401
+        content = b""
+
+    monkeypatch.setattr(video_providers.requests, "get", lambda *a, **k: _Denied())
+    provider = video_providers.PollinationsProvider(api_key="sk_test")
+    url = video_providers.PollinationsProvider.reference_url("someone", seed=3)
+
+    with pytest.raises(ProviderError, match="could not be made public"):
+        provider.image_to_video(tmp_path / "s.png", "move", tmp_path / "o.mp4",
+                                model="wan-3.0", reference_image_url=url)
+
+
+def test_a_primed_reference_goes_through(monkeypatch, tmp_path):
+    import video_providers
+
+    seen = {}
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "video/mp4"}
+        content = b"\x00" * 8192
+        text = ""
+
+    def _get(url, params=None, headers=None, timeout=None):
+        if params is None:                     # the priming fetch
+            return _Response()
+        seen["params"] = params
+        return _Response()
+
+    monkeypatch.setattr(video_providers.requests, "get", _get)
+    provider = video_providers.PollinationsProvider(api_key="sk_test")
+    url = video_providers.PollinationsProvider.reference_url("someone", seed=4)
+    result = provider.image_to_video(tmp_path / "s.png", "move", tmp_path / "o.mp4",
+                                     model="wan-3.0", reference_image_url=url)
+
+    assert seen["params"]["reference_images"] == url
+    assert seen["params"]["model"] == "wan-3.0"
+    assert result.path.exists()
+
+
+def test_an_externally_hosted_reference_is_not_primed(monkeypatch, tmp_path):
+    """Only this service's own URLs need warming; someone else's is already up."""
+    import video_providers
+
+    calls = []
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "video/mp4"}
+        content = b"\x00" * 8192
+        text = ""
+
+    def _get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        return _Response()
+
+    monkeypatch.setattr(video_providers.requests, "get", _get)
+    provider = video_providers.PollinationsProvider(api_key="sk_test")
+    provider.image_to_video(tmp_path / "s.png", "move", tmp_path / "o.mp4",
+                            model="wan-3.0",
+                            reference_image_url="https://example.test/hero.png")
+    assert len(calls) == 1, "it primed a URL it does not own"

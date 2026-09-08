@@ -672,20 +672,86 @@ class PollinationsProvider(VideoProvider):
             "seed": kwargs.get("seed"),
         }, output_path, seconds, model, on_progress)
 
+    # Models that accept reference media, and so can hold a character's design
+    # steady from shot to shot. The plain ones cannot: each generation is
+    # independent, so the same prompt gives a differently designed character
+    # every time, which is what makes AI fight scenes fall apart.
+    REFERENCE_MODELS = ("wan-3.0", "wan-pro", "seedance-2.5", "seedance-2.0")
+
+    @classmethod
+    def reference_url(cls, prompt: str, seed: int = 7, model: str = "zimage",
+                      width: int = 768, height: int = 1344) -> str:
+        """A stable public URL for a generated still, usable as a reference.
+
+        The service documents an /upload route for reference media, but it
+        answers 404 - so a local file cannot be handed over. What works
+        instead is that image generation is itself addressed by URL and cached
+        immutably: the same prompt and seed give back the same picture
+        forever, so that URL *is* the reference and nothing has to be hosted.
+
+        One catch, measured rather than assumed: the URL is NOT public until
+        the picture behind it has been made once. Fetched before that it
+        answers 401; fetched after, it serves the identical bytes to anyone,
+        with no key. So ``warm`` it before handing it to a video model, or the
+        model fetches a 401 instead of a character. ``prime_reference`` does
+        exactly that.
+        """
+        from urllib.parse import quote, urlencode  # noqa: PLC0415
+
+        query = urlencode({"model": model, "width": width, "height": height,
+                           "seed": int(seed)})
+        return f"{cls.BASE}/image/{quote(prompt.strip()[:1200], safe='')}?{query}"
+
+    def prime_reference(self, url: str, timeout: int = 240) -> bool:
+        """Make the picture behind a reference URL, so the URL becomes public.
+
+        Returns whether the URL now serves an image. A video model fetches
+        references anonymously, so an unprimed URL reaches it as a 401 and the
+        clip comes back with no character in it - a failure that looks like a
+        bad prompt rather than a missing fetch.
+        """
+        try:
+            response = requests.get(
+                url, headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning("Could not prime reference %s: %s", url[:80], exc)
+            return False
+        ok = response.status_code < 400 and len(response.content) > 1024
+        if not ok:
+            logger.warning("Reference %s did not prime: HTTP %s",
+                           url[:80], response.status_code)
+        return ok
+
     def image_to_video(
         self, image_path, prompt, output_path, seconds=5.0, motion_strength=0.7,
         on_progress=None, **kwargs,
     ) -> GenerationResult:
-        model = str(kwargs.get("model") or self.DEFAULT_MODEL)
-        # reference_images takes public URLs only, so a local still has to be
-        # uploaded first - which this provider does not do. Say so plainly
-        # rather than sending a data URI it will reject.
+        model = str(kwargs.get("model") or "wan-3.0")
+        if model not in self.REFERENCE_MODELS:
+            raise ProviderError(
+                f"'{model}' does not take reference media; use one of "
+                f"{', '.join(self.REFERENCE_MODELS)} to hold a character steady."
+            )
+        # reference_images takes public URLs only. A local file has nowhere to
+        # live, so the caller passes a URL - reference_url() builds one out of
+        # the image generator, which needs no hosting.
         reference = kwargs.get("reference_image_url")
         if not reference:
             raise ProviderError(
-                "Pollinations image-to-video needs a public image URL; a local "
-                "file has to be uploaded somewhere reachable first."
+                "Pollinations image-to-video needs a public image URL. Build one "
+                "with PollinationsProvider.reference_url(prompt, seed), or pass "
+                "reference_image_url= for a still you already host."
             )
+        # A reference the model cannot fetch is worse than none: the clip comes
+        # back without the character and nothing says why.
+        if str(reference).startswith(self.BASE) and not kwargs.get("primed"):
+            if not self.prime_reference(str(reference)):
+                raise ProviderError(
+                    "The reference image could not be made public; the video "
+                    "model would fetch a 401 instead of the character."
+                )
         return self._fetch(prompt, {
             "model": model,
             "duration": int(round(seconds)),
