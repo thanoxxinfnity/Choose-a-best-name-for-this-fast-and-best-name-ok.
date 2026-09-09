@@ -9,6 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,6 +30,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -80,6 +83,8 @@ object SecureStore {
     const val KEY_PUTER = "puter_api_key"
     const val KEY_BACKEND_URL = "backend_url"
     const val KEY_VIDEO_ENDPOINT = "video_endpoint_url"
+    const val KEY_POLLINATIONS = "pollinations_api_key"
+    const val KEY_IMAGE_MODEL = "image_model"
     const val KEY_VOICE_ACCENT = "voice_accent"
     const val KEY_CAPTIONS = "captions_enabled"
     const val KEY_VOICEOVER = "voiceover_enabled"
@@ -142,6 +147,12 @@ object SecureStore {
     fun videoEndpoint(context: Context): String =
         read(context, KEY_VIDEO_ENDPOINT).trimEnd('/')
 
+    fun pollinationsKey(context: Context): String = read(context, KEY_POLLINATIONS)
+
+    /** Which model draws stickers, backgrounds and key frames. */
+    fun imageModel(context: Context): String =
+        read(context, KEY_IMAGE_MODEL).ifBlank { "zimage" }
+
     fun backendUrl(context: Context): String =
         read(context, KEY_BACKEND_URL).ifBlank { BuildConfig.DEFAULT_BACKEND_URL }.trimEnd('/')
 
@@ -175,6 +186,8 @@ object SecureStore {
             .remove(KEY_YOUTUBE_TOKEN)
             .remove(KEY_PUTER)
             .remove(KEY_VIDEO_ENDPOINT)
+            .remove(KEY_POLLINATIONS)
+            .remove(KEY_IMAGE_MODEL)
             .apply()
     }
 
@@ -200,7 +213,26 @@ class SettingsActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Image models the app can draw with: key, label, and whether a free account
+ * can run it. Mirrors backend/image_models.py, where each entry was called
+ * once with a real key and the result looked at - the service's own price list
+ * does not predict what the free tier allows.
+ */
+private val IMAGE_MODELS = listOf(
+    Triple("zimage", "Z-Image (anime)", true),
+    Triple("flux", "FLUX", true),
+    Triple("dreamshaper", "Dreamshaper", true),
+    Triple("microsoft/mai-image-2.5-flash", "MAI 2.5 (photo)", true),
+    Triple("gptimage", "GPT Image (photo)", true),
+    Triple("gpt-image-2", "GPT Image 2 (photo)", true),
+    Triple("nanobanana-2", "Nano Banana 2", false),
+    Triple("nanobanana-pro", "Nano Banana Pro", false),
+    Triple("seedream5-pro", "Seedream 5 Pro", false),
+    Triple("flux-2-flex", "FLUX 2 Flex", false),
+)
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -212,6 +244,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     var youtubeToken by rememberSaveable { mutableStateOf(SecureStore.youtubeToken(context)) }
     var puterKey by rememberSaveable { mutableStateOf(SecureStore.puterKey(context)) }
     var videoEndpoint by rememberSaveable { mutableStateOf(SecureStore.videoEndpoint(context)) }
+    var pollinationsKey by rememberSaveable { mutableStateOf(SecureStore.pollinationsKey(context)) }
+    var imageModel by rememberSaveable { mutableStateOf(SecureStore.imageModel(context)) }
     var testing by rememberSaveable { mutableStateOf(false) }
 
     fun persist() {
@@ -220,6 +254,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         SecureStore.write(context, SecureStore.KEY_YOUTUBE_TOKEN, youtubeToken)
         SecureStore.write(context, SecureStore.KEY_PUTER, puterKey)
         SecureStore.write(context, SecureStore.KEY_VIDEO_ENDPOINT, videoEndpoint.trimEnd('/'))
+        SecureStore.write(context, SecureStore.KEY_POLLINATIONS, pollinationsKey)
+        SecureStore.write(context, SecureStore.KEY_IMAGE_MODEL, imageModel)
     }
 
     Scaffold(
@@ -280,6 +316,44 @@ fun SettingsScreen(onBack: () -> Unit) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            SecretField(
+                label = "Pollinations API Key",
+                helper = "Draws stickers, backgrounds and key frames (sk_...). " +
+                    "Free from enter.pollinations.ai/keys",
+                value = pollinationsKey,
+                onValueChange = { pollinationsKey = it },
+            )
+
+            Text("Image model", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "What draws the pictures. The free ones are marked; the rest need " +
+                    "Pollen on the account.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IMAGE_MODELS.forEach { (key, label, free) ->
+                    FilterChip(
+                        selected = imageModel == key,
+                        onClick = { imageModel = key },
+                        label = { Text(label) },
+                        leadingIcon = if (!free) {
+                            { Text("\uD83D\uDD12") }
+                        } else null,
+                    )
+                }
+            }
+            IMAGE_MODELS.firstOrNull { it.first == imageModel }?.let { (_, _, free) ->
+                if (!free) {
+                    Text(
+                        "This one needs a paid balance. Without it the render falls " +
+                            "back and says so in the warnings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
 
             SecretField(
                 label = "NVIDIA NIM API Key",

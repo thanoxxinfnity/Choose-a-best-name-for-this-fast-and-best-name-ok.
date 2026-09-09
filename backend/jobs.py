@@ -50,6 +50,7 @@ class JobCredentials:
 
     puter_key: str = ""
     nim_key: str = ""
+    pollinations_key: str = ""
     youtube_token: str = ""
     # The user's own video-generation endpoint. A URL rather than a key, but it
     # travels the same way: set on the device, sent per request, never stored
@@ -58,6 +59,9 @@ class JobCredentials:
 
     def resolved_puter_key(self) -> str:
         return self.puter_key or settings.puter_api_key
+
+    def resolved_pollinations_key(self) -> str:
+        return self.pollinations_key or settings.pollinations_api_key
 
     def resolved_nim_key(self) -> str:
         return self.nim_key or settings.nim_api_key
@@ -89,6 +93,7 @@ class JobRequest:
     auto_beat_sync: bool = False
     auto_reframe: bool = False
     match_grade: bool = True
+    image_model: str = "zimage"
     enable_sfx: bool = True
     enable_transitions: bool = True
     # Long source in, short clip out: find the moment before editing it.
@@ -375,6 +380,8 @@ class JobManager:
             puter = PuterClient(
                 api_key=request.credentials.resolved_puter_key(),
                 nim_api_key=nim_key,
+                pollinations_key=request.credentials.resolved_pollinations_key(),
+                image_model=request.image_model,
             )
 
             # ---------------------------------- 0. find the clip in the film

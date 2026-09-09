@@ -266,6 +266,8 @@ object ApiClient {
         SecureStore.youtubeToken(context).takeIf { it.isNotBlank() }?.let { add("X-YouTube-Token", it) }
         SecureStore.videoEndpoint(context).takeIf { it.isNotBlank() }
             ?.let { add("X-Video-Endpoint", it) }
+        SecureStore.pollinationsKey(context).takeIf { it.isNotBlank() }
+            ?.let { add("X-Pollinations-Key", it) }
         add("Accept", "application/json")
     }.build()
 

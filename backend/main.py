@@ -69,6 +69,7 @@ from schemas import (
     ThemeInfo,
     TtsRequest,
     VideoProviderInfo,
+    ImageModelInfo,
     VoiceInfo,
 )
 from export_presets import PRESETS, describe_cost, resolve_preset
@@ -91,6 +92,7 @@ from video_providers import (
     describe_providers,
     get_provider,
 )
+import image_models
 from magpie_tts import ReferenceUnusable
 from voices import (
     VOICE_PROFILES,
@@ -153,12 +155,14 @@ def get_credentials(
     x_nim_key: Optional[str] = Header(default=None, alias="X-NIM-Key"),
     x_youtube_token: Optional[str] = Header(default=None, alias="X-YouTube-Token"),
     x_video_endpoint: Optional[str] = Header(default=None, alias="X-Video-Endpoint"),
+    x_pollinations_key: Optional[str] = Header(default=None, alias="X-Pollinations-Key"),
 ) -> JobCredentials:
     return JobCredentials(
         puter_key=(x_puter_key or "").strip(),
         nim_key=(x_nim_key or "").strip(),
         youtube_token=(x_youtube_token or "").strip(),
         video_endpoint=(x_video_endpoint or "").strip(),
+        pollinations_key=(x_pollinations_key or "").strip(),
     )
 
 
@@ -237,6 +241,7 @@ async def create_render_job(
     auto_beat_sync: bool = Form(default=False),
     auto_reframe: bool = Form(default=False),
     match_grade: bool = Form(default=True),
+    image_model: str = Form(default="zimage"),
     enable_sfx: bool = Form(default=True),
     enable_transitions: bool = Form(default=True),
     auto_highlight: bool = Form(default=True),
@@ -310,6 +315,7 @@ async def create_render_job(
             auto_beat_sync=auto_beat_sync,
             auto_reframe=auto_reframe,
             match_grade=match_grade,
+            image_model=image_model,
             enable_sfx=enable_sfx,
             enable_transitions=enable_transitions,
             auto_highlight=auto_highlight,
@@ -576,6 +582,21 @@ def list_sfx() -> Dict[str, Any]:
         "default_enabled": settings.enable_sfx,
         "gain": settings.sfx_audio_gain,
     }
+
+
+@app.get("/api/v1/image-models", response_model=List[ImageModelInfo])
+def list_image_models(look: str = "") -> List[ImageModelInfo]:
+    """Image models the app can draw with, and what each is for.
+
+    ``look`` filters to a job - "anime" or "photoreal". Locked models are
+    listed rather than hidden, so the picker can show what a balance would
+    buy instead of pretending it does not exist.
+    """
+    return [
+        ImageModelInfo(key=m.key, label=m.label, look=m.look, free=m.free,
+                       seconds=m.seconds, note=m.note)
+        for m in image_models.for_look(look)
+    ]
 
 
 @app.get("/api/v1/voices", response_model=List[VoiceInfo])

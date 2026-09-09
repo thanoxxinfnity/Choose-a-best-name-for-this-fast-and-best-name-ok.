@@ -95,11 +95,19 @@ class PuterClient:
         max_retries: int = 3,
         session: Optional[requests.Session] = None,
         nim_api_key: Optional[str] = None,
+        pollinations_key: Optional[str] = None,
+        image_model: Optional[str] = None,
     ) -> None:
         self.api_key = (api_key or settings.puter_api_key or "").strip()
         # Cloned voices are synthesised by NVIDIA, not by Puter, so the client
         # that serves a TTS request has to be able to reach both.
         self.nim_api_key = (nim_api_key or "").strip()
+        # Images can come from either. Puter's image driver spent most of this
+        # project out of credit, and the chosen model is a real creative
+        # decision - an anime key frame and a photoreal plate are not the same
+        # job - so the second route is a first-class one rather than a rescue.
+        self.pollinations_key = (pollinations_key or settings.pollinations_api_key or "").strip()
+        self.image_model = (image_model or settings.image_model or "").strip()
         self.base_url = (base_url or settings.puter_base_url).rstrip("/")
         self.timeout = timeout or settings.puter_timeout
         self.max_retries = max(1, max_retries)
@@ -461,16 +469,36 @@ class PuterClient:
         if style:
             args["style"] = style
 
-        body, content_type, parsed = self.call_driver(
-            settings.puter_txt2img_interface,
-            settings.puter_txt2img_driver,
-            settings.puter_txt2img_method,
-            args,
-            accept="image/png",
-        )
-        image = self._resolve_media(body, content_type, parsed, "image")
-        output_path.write_bytes(image)
-        return output_path
+        try:
+            body, content_type, parsed = self.call_driver(
+                settings.puter_txt2img_interface,
+                settings.puter_txt2img_driver,
+                settings.puter_txt2img_method,
+                args,
+                accept="image/png",
+            )
+            image = self._resolve_media(body, content_type, parsed, "image")
+            output_path.write_bytes(image)
+            return output_path
+        except Exception as exc:
+            if not self.pollinations_key:
+                raise
+            logger.info("Puter image failed (%s); drawing with '%s' instead",
+                        str(exc)[:90], self.image_model)
+            return self._draw_with_pollinations(prompt, output_path, width, height)
+
+    def _draw_with_pollinations(self, prompt: str, output_path: Path,
+                                width: int, height: int) -> Path:
+        """The other image route, chosen by model rather than fixed."""
+        import image_models  # noqa: PLC0415
+
+        try:
+            return image_models.generate(
+                prompt, output_path, self.pollinations_key,
+                model=self.image_model, width=width, height=height,
+            )
+        except Exception as exc:
+            raise PuterError(f"Image generation failed: {exc}") from exc
 
     def generate_sticker(
         self,

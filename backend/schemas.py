@@ -472,6 +472,17 @@ class VoiceInfo(BaseModel):
     reference_notes: List[str] = Field(default_factory=list)
 
 
+class ImageModelInfo(BaseModel):
+    key: str
+    label: str
+    # "anime" | "photoreal" | "both" - what the model is actually good at.
+    look: str = "both"
+    free: bool = True
+    # Measured seconds for one image, so the picker can warn about the slow ones.
+    seconds: float = 0.0
+    note: str = ""
+
+
 class VideoProviderInfo(BaseModel):
     key: str
     label: str

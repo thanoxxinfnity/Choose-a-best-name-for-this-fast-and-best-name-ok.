@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     puter_tts_driver: str = "aws-polly"
     puter_tts_method: str = "synthesize"
 
+    # Pollinations serves the image models the app draws with; the key is
+    # free and per-account, so it lives beside the others rather than in code.
+    pollinations_api_key: str = ""
+    image_model: str = "zimage"
+
     puter_txt2img_interface: str = "puter-image-generation"
     puter_txt2img_driver: str = "openai-image-generation"
     puter_txt2img_method: str = "generate"
