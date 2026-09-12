@@ -97,6 +97,7 @@ class PuterClient:
         nim_api_key: Optional[str] = None,
         pollinations_key: Optional[str] = None,
         image_model: Optional[str] = None,
+        horde_key: Optional[str] = None,
     ) -> None:
         self.api_key = (api_key or settings.puter_api_key or "").strip()
         # Cloned voices are synthesised by NVIDIA, not by Puter, so the client
@@ -108,6 +109,7 @@ class PuterClient:
         # job - so the second route is a first-class one rather than a rescue.
         self.pollinations_key = (pollinations_key or settings.pollinations_api_key or "").strip()
         self.image_model = (image_model or settings.image_model or "").strip()
+        self.horde_key = (horde_key or settings.horde_api_key or "").strip()
         self.base_url = (base_url or settings.puter_base_url).rstrip("/")
         self.timeout = timeout or settings.puter_timeout
         self.max_retries = max(1, max_retries)
@@ -469,6 +471,11 @@ class PuterClient:
         if style:
             args["style"] = style
 
+        # If the chosen model belongs to another service, go straight there
+        # rather than spending a failed Puter call to arrive at it.
+        if self._chosen_provider() != "puter":
+            return self._draw_from_catalogue(prompt, output_path, width, height)
+
         try:
             body, content_type, parsed = self.call_driver(
                 settings.puter_txt2img_interface,
@@ -481,24 +488,57 @@ class PuterClient:
             output_path.write_bytes(image)
             return output_path
         except Exception as exc:
-            if not self.pollinations_key:
-                raise
-            logger.info("Puter image failed (%s); drawing with '%s' instead",
-                        str(exc)[:90], self.image_model)
-            return self._draw_with_pollinations(prompt, output_path, width, height)
+            logger.info("Puter image failed (%s); falling back", str(exc)[:90])
+            try:
+                return self._draw_from_catalogue(prompt, output_path, width, height)
+            except Exception:
+                raise exc from None
 
-    def _draw_with_pollinations(self, prompt: str, output_path: Path,
-                                width: int, height: int) -> Path:
-        """The other image route, chosen by model rather than fixed."""
+    def _chosen_provider(self) -> str:
+        """Which service the selected model belongs to."""
         import image_models  # noqa: PLC0415
 
-        try:
-            return image_models.generate(
-                prompt, output_path, self.pollinations_key,
-                model=self.image_model, width=width, height=height,
-            )
-        except Exception as exc:
-            raise PuterError(f"Image generation failed: {exc}") from exc
+        model = (self.image_model or "").strip()
+        if not model:
+            return "puter"
+        return image_models.resolve(model).provider
+
+    def _draw_from_catalogue(self, prompt: str, output_path: Path,
+                             width: int, height: int) -> Path:
+        """Draw with the picked model, then with whatever is still standing.
+
+        The order is deliberate: the picked model first because it is what was
+        asked for, then Pollinations if there is a key, then the horde, which
+        is last because it is slow but goes last for the better reason that it
+        cannot run out - no key, no balance, no quota. So an image job only
+        fails here if every route is down, not merely if the paid ones are.
+        """
+        import image_models  # noqa: PLC0415
+
+        attempts: list[tuple[str, str]] = []
+        picked = (self.image_model or "").strip()
+        if picked:
+            attempts.append((picked, "the model you picked"))
+        if self.pollinations_key:
+            attempts.append((image_models.DEFAULT_MODEL, "Pollinations"))
+        attempts.append(("horde:Nova Anime XL", "the AI Horde"))
+
+        failures: list[str] = []
+        seen: set[str] = set()
+        for model, description in attempts:
+            if model in seen:
+                continue
+            seen.add(model)
+            try:
+                return image_models.generate(
+                    prompt, output_path, self.pollinations_key, model=model,
+                    width=width, height=height, horde_key=self.horde_key,
+                )
+            except Exception as exc:
+                logger.info("%s could not draw it: %s", description, str(exc)[:120])
+                failures.append(f"{description}: {exc}")
+
+        raise PuterError("Image generation failed. " + " | ".join(failures))
 
     def generate_sticker(
         self,

@@ -33,6 +33,9 @@ class ImageModel:
     free: bool
     seconds: float       # measured, not promised
     note: str = ""
+    # Which service draws it. They fail in different ways and cost different
+    # things, so the caller and the picker both need to know which is which.
+    provider: str = "pollinations"   # "pollinations" | "horde"
 
 
 # Measured on 2026-09-09 against a real account, one call each, same prompt.
@@ -59,6 +62,23 @@ MODELS: Tuple[ImageModel, ...] = (
                "High-end illustration."),
     ImageModel("flux-2-flex", "FLUX 2 Flex", "both", False, 0.0,
                "The newer FLUX."),
+
+    # AI Horde: a volunteer GPU pool. No bill and no quota, which nothing
+    # above can say, and it needs no key at all - it falls back to a shared
+    # anonymous account. It is paid for in waiting instead: a measured single
+    # image took 281 seconds, nearly all of it queueing, so these are for a
+    # batch left to run rather than for one image someone is watching for.
+    ImageModel("horde:Nova Anime XL", "Horde - Nova Anime", "anime", True, 281.0,
+               "Free forever, no key needed. Slow, so best in a batch.",
+               "horde"),
+    ImageModel("horde:Rag Illustrious Mix", "Horde - Illustrious", "anime", True, 281.0,
+               "Free forever. Sharper lineart than Nova.", "horde"),
+    ImageModel("horde:AlbedoBase XL (SDXL)", "Horde - AlbedoBase XL", "both", True, 281.0,
+               "Free forever. Even-handed on both looks.", "horde"),
+    ImageModel("horde:ICBINP XL", "Horde - ICBINP XL", "photoreal", True, 281.0,
+               "Free forever. Photographic people.", "horde"),
+    ImageModel("horde:Juggernaut XL", "Horde - Juggernaut XL", "photoreal", True, 281.0,
+               "Free forever. Photoreal with strong lighting.", "horde"),
 )
 
 BY_KEY: Dict[str, ImageModel] = {model.key: model for model in MODELS}
@@ -68,6 +88,16 @@ DEFAULT_MODEL = "zimage"
 def resolve(key: Optional[str]) -> ImageModel:
     """The named model, or the default when the name is unknown or empty."""
     return BY_KEY.get((key or "").strip(), BY_KEY[DEFAULT_MODEL])
+
+
+def horde_name(model: ImageModel) -> str:
+    """The horde's own spelling of a model, without our ``horde:`` prefix."""
+    return model.key.split(":", 1)[1] if model.key.startswith("horde:") else model.key
+
+
+def no_key_models() -> List[ImageModel]:
+    """Models that draw with no key of any kind. Currently the horde's."""
+    return [model for model in MODELS if model.provider == "horde"]
 
 
 def free_models() -> List[ImageModel]:
@@ -97,9 +127,9 @@ def image_url(prompt: str, model: str = DEFAULT_MODEL, width: int = 768,
     return f"{BASE}/image/{quote((prompt or '').strip()[:1200], safe='')}?{query}"
 
 
-def generate(prompt: str, destination, api_key: str, model: str = DEFAULT_MODEL,
+def generate(prompt: str, destination, api_key: str = "", model: str = DEFAULT_MODEL,
              width: int = 768, height: int = 1344, seed: int = 0,
-             timeout: int = 180):
+             timeout: int = 180, horde_key: str = ""):
     """Draw one image to ``destination``. Returns the path.
 
     Raises RuntimeError with the service's own words on failure, because the
@@ -111,6 +141,16 @@ def generate(prompt: str, destination, api_key: str, model: str = DEFAULT_MODEL,
     import requests  # noqa: PLC0415
 
     chosen = resolve(model)
+    if chosen.provider == "horde":
+        try:                                        # noqa: PLC0415
+            from . import horde as horde_module
+        except ImportError:                         # imported flat, not as a package
+            import horde as horde_module            # noqa: PLC0415
+
+        return horde_module.generate(
+            prompt, destination, api_key=horde_key or horde_module.ANON_KEY,
+            model=horde_name(chosen), width=width, height=height, seed=seed,
+            timeout=float(max(timeout, 900)))
     if not api_key:
         raise RuntimeError("Image generation needs a Pollinations key.")
 

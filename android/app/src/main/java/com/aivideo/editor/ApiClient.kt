@@ -268,6 +268,8 @@ object ApiClient {
             ?.let { add("X-Video-Endpoint", it) }
         SecureStore.pollinationsKey(context).takeIf { it.isNotBlank() }
             ?.let { add("X-Pollinations-Key", it) }
+        SecureStore.hordeKey(context).takeIf { it.isNotBlank() }
+            ?.let { add("X-Horde-Key", it) }
         add("Accept", "application/json")
     }.build()
 

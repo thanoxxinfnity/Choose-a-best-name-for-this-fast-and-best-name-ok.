@@ -481,6 +481,8 @@ class ImageModelInfo(BaseModel):
     # Measured seconds for one image, so the picker can warn about the slow ones.
     seconds: float = 0.0
     note: str = ""
+    # "pollinations" needs a key; "horde" is free and needs none.
+    provider: str = "pollinations"
 
 
 class VideoProviderInfo(BaseModel):

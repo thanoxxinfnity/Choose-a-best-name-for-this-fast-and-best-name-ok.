@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     pollinations_api_key: str = ""
     image_model: str = "zimage"
 
+    # The AI Horde needs no account: "0000000000" is a shared anonymous key
+    # that works out of the box. It is also last in the queue, so a user's own
+    # free key from aihorde.net overrides it and is served sooner.
+    horde_api_key: str = "0000000000"
+
     puter_txt2img_interface: str = "puter-image-generation"
     puter_txt2img_driver: str = "openai-image-generation"
     puter_txt2img_method: str = "generate"

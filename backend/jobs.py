@@ -51,6 +51,7 @@ class JobCredentials:
     puter_key: str = ""
     nim_key: str = ""
     pollinations_key: str = ""
+    horde_key: str = ""
     youtube_token: str = ""
     # The user's own video-generation endpoint. A URL rather than a key, but it
     # travels the same way: set on the device, sent per request, never stored
@@ -62,6 +63,10 @@ class JobCredentials:
 
     def resolved_pollinations_key(self) -> str:
         return self.pollinations_key or settings.pollinations_api_key
+
+    def resolved_horde_key(self) -> str:
+        # Never empty: with no key anywhere the anonymous account still draws.
+        return self.horde_key or settings.horde_api_key or "0000000000"
 
     def resolved_nim_key(self) -> str:
         return self.nim_key or settings.nim_api_key
@@ -381,6 +386,7 @@ class JobManager:
                 api_key=request.credentials.resolved_puter_key(),
                 nim_api_key=nim_key,
                 pollinations_key=request.credentials.resolved_pollinations_key(),
+                horde_key=request.credentials.resolved_horde_key(),
                 image_model=request.image_model,
             )
 

@@ -156,6 +156,7 @@ def get_credentials(
     x_youtube_token: Optional[str] = Header(default=None, alias="X-YouTube-Token"),
     x_video_endpoint: Optional[str] = Header(default=None, alias="X-Video-Endpoint"),
     x_pollinations_key: Optional[str] = Header(default=None, alias="X-Pollinations-Key"),
+    x_horde_key: Optional[str] = Header(default=None, alias="X-Horde-Key"),
 ) -> JobCredentials:
     return JobCredentials(
         puter_key=(x_puter_key or "").strip(),
@@ -163,6 +164,7 @@ def get_credentials(
         youtube_token=(x_youtube_token or "").strip(),
         video_endpoint=(x_video_endpoint or "").strip(),
         pollinations_key=(x_pollinations_key or "").strip(),
+        horde_key=(x_horde_key or "").strip(),
     )
 
 
@@ -594,7 +596,7 @@ def list_image_models(look: str = "") -> List[ImageModelInfo]:
     """
     return [
         ImageModelInfo(key=m.key, label=m.label, look=m.look, free=m.free,
-                       seconds=m.seconds, note=m.note)
+                       seconds=m.seconds, note=m.note, provider=m.provider)
         for m in image_models.for_look(look)
     ]
 

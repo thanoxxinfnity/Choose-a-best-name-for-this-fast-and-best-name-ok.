@@ -84,6 +84,7 @@ object SecureStore {
     const val KEY_BACKEND_URL = "backend_url"
     const val KEY_VIDEO_ENDPOINT = "video_endpoint_url"
     const val KEY_POLLINATIONS = "pollinations_api_key"
+    const val KEY_HORDE = "horde_api_key"
     const val KEY_IMAGE_MODEL = "image_model"
     const val KEY_VOICE_ACCENT = "voice_accent"
     const val KEY_CAPTIONS = "captions_enabled"
@@ -149,6 +150,9 @@ object SecureStore {
 
     fun pollinationsKey(context: Context): String = read(context, KEY_POLLINATIONS)
 
+    /** Blank is fine: the server falls back to the shared anonymous account. */
+    fun hordeKey(context: Context): String = read(context, KEY_HORDE)
+
     /** Which model draws stickers, backgrounds and key frames. */
     fun imageModel(context: Context): String =
         read(context, KEY_IMAGE_MODEL).ifBlank { "zimage" }
@@ -187,6 +191,7 @@ object SecureStore {
             .remove(KEY_PUTER)
             .remove(KEY_VIDEO_ENDPOINT)
             .remove(KEY_POLLINATIONS)
+            .remove(KEY_HORDE)
             .remove(KEY_IMAGE_MODEL)
             .apply()
     }
@@ -219,17 +224,33 @@ class SettingsActivity : ComponentActivity() {
  * once with a real key and the result looked at - the service's own price list
  * does not predict what the free tier allows.
  */
+private enum class Tier { NO_KEY, FREE, PAID }
+
+private data class ImageModelChoice(
+    val key: String,
+    val label: String,
+    val tier: Tier,
+)
+
 private val IMAGE_MODELS = listOf(
-    Triple("zimage", "Z-Image (anime)", true),
-    Triple("flux", "FLUX", true),
-    Triple("dreamshaper", "Dreamshaper", true),
-    Triple("microsoft/mai-image-2.5-flash", "MAI 2.5 (photo)", true),
-    Triple("gptimage", "GPT Image (photo)", true),
-    Triple("gpt-image-2", "GPT Image 2 (photo)", true),
-    Triple("nanobanana-2", "Nano Banana 2", false),
-    Triple("nanobanana-pro", "Nano Banana Pro", false),
-    Triple("seedream5-pro", "Seedream 5 Pro", false),
-    Triple("flux-2-flex", "FLUX 2 Flex", false),
+    // Pollinations: fast, but every one of these needs a key on the account.
+    ImageModelChoice("zimage", "Z-Image (anime)", Tier.FREE),
+    ImageModelChoice("flux", "FLUX", Tier.FREE),
+    ImageModelChoice("dreamshaper", "Dreamshaper", Tier.FREE),
+    ImageModelChoice("microsoft/mai-image-2.5-flash", "MAI 2.5 (photo)", Tier.FREE),
+    ImageModelChoice("gptimage", "GPT Image (photo)", Tier.FREE),
+    ImageModelChoice("gpt-image-2", "GPT Image 2 (photo)", Tier.FREE),
+    ImageModelChoice("nanobanana-2", "Nano Banana 2", Tier.PAID),
+    ImageModelChoice("nanobanana-pro", "Nano Banana Pro", Tier.PAID),
+    ImageModelChoice("seedream5-pro", "Seedream 5 Pro", Tier.PAID),
+    ImageModelChoice("flux-2-flex", "FLUX 2 Flex", Tier.PAID),
+    // AI Horde: no account, no quota, no bill - it draws even with every
+    // field on this screen left blank. Slow, so it is listed last.
+    ImageModelChoice("horde:Nova Anime XL", "Horde Anime", Tier.NO_KEY),
+    ImageModelChoice("horde:Rag Illustrious Mix", "Horde Illustrious", Tier.NO_KEY),
+    ImageModelChoice("horde:AlbedoBase XL (SDXL)", "Horde AlbedoBase", Tier.NO_KEY),
+    ImageModelChoice("horde:ICBINP XL", "Horde ICBINP (photo)", Tier.NO_KEY),
+    ImageModelChoice("horde:Juggernaut XL", "Horde Juggernaut (photo)", Tier.NO_KEY),
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -245,6 +266,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     var puterKey by rememberSaveable { mutableStateOf(SecureStore.puterKey(context)) }
     var videoEndpoint by rememberSaveable { mutableStateOf(SecureStore.videoEndpoint(context)) }
     var pollinationsKey by rememberSaveable { mutableStateOf(SecureStore.pollinationsKey(context)) }
+    var hordeKey by rememberSaveable { mutableStateOf(SecureStore.hordeKey(context)) }
     var imageModel by rememberSaveable { mutableStateOf(SecureStore.imageModel(context)) }
     var testing by rememberSaveable { mutableStateOf(false) }
 
@@ -255,6 +277,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         SecureStore.write(context, SecureStore.KEY_PUTER, puterKey)
         SecureStore.write(context, SecureStore.KEY_VIDEO_ENDPOINT, videoEndpoint.trimEnd('/'))
         SecureStore.write(context, SecureStore.KEY_POLLINATIONS, pollinationsKey)
+        SecureStore.write(context, SecureStore.KEY_HORDE, hordeKey)
         SecureStore.write(context, SecureStore.KEY_IMAGE_MODEL, imageModel)
     }
 
@@ -325,33 +348,53 @@ fun SettingsScreen(onBack: () -> Unit) {
                 onValueChange = { pollinationsKey = it },
             )
 
+            SecretField(
+                label = "AI Horde API Key (optional)",
+                helper = "Leave blank and it still works - it falls back to a shared " +
+                    "account that is free but last in the queue. Your own free key " +
+                    "from aihorde.net is served sooner.",
+                value = hordeKey,
+                onValueChange = { hordeKey = it },
+            )
+
             Text("Image model", style = MaterialTheme.typography.bodyMedium)
             Text(
-                "What draws the pictures. The free ones are marked; the rest need " +
-                    "Pollen on the account.",
+                "What draws the pictures. \u267E\uFE0F needs no key at all, \uD83D\uDD12 " +
+                    "needs a paid balance, the rest need the Pollinations key above.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IMAGE_MODELS.forEach { (key, label, free) ->
+                IMAGE_MODELS.forEach { choice ->
                     FilterChip(
-                        selected = imageModel == key,
-                        onClick = { imageModel = key },
-                        label = { Text(label) },
-                        leadingIcon = if (!free) {
-                            { Text("\uD83D\uDD12") }
-                        } else null,
+                        selected = imageModel == choice.key,
+                        onClick = { imageModel = choice.key },
+                        label = { Text(choice.label) },
+                        leadingIcon = when (choice.tier) {
+                            Tier.PAID -> ({ Text("\uD83D\uDD12") })
+                            Tier.NO_KEY -> ({ Text("\u267E\uFE0F") })
+                            Tier.FREE -> null
+                        },
                     )
                 }
             }
-            IMAGE_MODELS.firstOrNull { it.first == imageModel }?.let { (_, _, free) ->
-                if (!free) {
-                    Text(
+            IMAGE_MODELS.firstOrNull { it.key == imageModel }?.let { choice ->
+                when (choice.tier) {
+                    Tier.PAID -> Text(
                         "This one needs a paid balance. Without it the render falls " +
                             "back and says so in the warnings.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+                    Tier.NO_KEY -> Text(
+                        "Free with no account and no limit, but slow: a measured image " +
+                            "took about 5 minutes, nearly all of it queueing. A whole " +
+                            "batch is queued at once, so twenty shots cost about what " +
+                            "one does - good to start and leave running.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Tier.FREE -> Unit
                 }
             }
 
