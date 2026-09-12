@@ -51,6 +51,12 @@ CLIENT_AGENT = "moja-ai:1.0:https://github.com/moja-ai"
 SIZE_STEP = 64
 MAX_ANON_PIXELS = 1024 * 1024
 
+# The API answers "2 per 1 second" with HTTP 429 above this. A tight submit
+# loop over a twenty-shot batch therefore loses most of the batch, so leave a
+# margin rather than sitting on the limit.
+SUBMIT_INTERVAL = 0.75
+SUBMIT_RETRIES = 4
+
 
 @dataclass(frozen=True)
 class HordeModel:
@@ -62,18 +68,22 @@ class HordeModel:
 # Picked from the 165 models online by worker count, because a model with
 # two workers queues behind one with ten no matter how good it is.
 CURATED: tuple[HordeModel, ...] = (
-    HordeModel("Nova Anime XL", "anime",
-               "Clean modern anime. The default for shots."),
+    # Order is by what actually drew, not by reputation. AlbedoBase produced
+    # the only real image in the first round of testing; Nova refused six
+    # prompts out of six - including one with no people in it at all - so it
+    # sits behind the models that worked.
+    HordeModel("AlbedoBase XL (SDXL)", "anime", "General SDXL. Proven to draw."),
     HordeModel("Rag Illustrious Mix", "anime", "Illustrious base, sharp lineart."),
     HordeModel("526Mix-Animated", "anime", "Softer, more painterly cels."),
-    HordeModel("AlbedoBase XL (SDXL)", "anime", "General SDXL, handles either look."),
+    HordeModel("Nova Anime XL", "anime",
+               "Clean modern anime, but its filter refuses a lot."),
     HordeModel("ICBINP XL", "photoreal", "Photographic people."),
     HordeModel("Juggernaut XL", "photoreal", "Photoreal with strong lighting."),
     HordeModel("Realistic Vision", "photoreal", "Portraits."),
     HordeModel("AbsoluteReality", "photoreal", "Places and backgrounds."),
 )
 
-DEFAULT_ANIME = "Nova Anime XL"
+DEFAULT_ANIME = "AlbedoBase XL (SDXL)"
 DEFAULT_PHOTOREAL = "ICBINP XL"
 
 
@@ -150,7 +160,8 @@ def submit(prompt: str, destination, api_key: str = ANON_KEY,
            model: str = "", look: str = "anime",
            width: int = 768, height: int = 1344, steps: int = 24,
            sampler: str = "k_euler_a", cfg_scale: float = 7.0,
-           seed: int = 0, nsfw: bool = False, timeout: int = 60) -> Ticket:
+           seed: int = 0, nsfw: bool = False, censor: bool = True,
+           timeout: int = 60) -> Ticket:
     """Put one image in the queue and return its ticket. Does not wait."""
     width, height = fit_budget(width, height)
     chosen = model or pick_model(look)
@@ -164,7 +175,11 @@ def submit(prompt: str, destination, api_key: str = ANON_KEY,
         "prompt": prompt,
         "params": params,
         "nsfw": nsfw,
-        "censor_nsfw": not nsfw,
+        # Kept on deliberately. Turning it off does not get the picture drawn
+        # - a blocked job comes back as a blank black frame instead of a card
+        # - and leaving it on at least sets the ``censored`` flag, which is
+        # the one unambiguous signal that a refusal happened.
+        "censor_nsfw": censor and not nsfw,
         "r2": True,
         # Slow and low-VRAM workers roughly double the pool we can land on,
         # and at the back of the queue any worker is better than a fast one
@@ -173,12 +188,19 @@ def submit(prompt: str, destination, api_key: str = ANON_KEY,
         "extra_slow_workers": True,
         "models": [chosen],
     }
-    response = _session().post(f"{BASE}/generate/async", headers=_headers(api_key),
-                               json=body, timeout=timeout)
+    session = _session()
+    for attempt in range(SUBMIT_RETRIES):
+        response = session.post(f"{BASE}/generate/async", headers=_headers(api_key),
+                                json=body, timeout=timeout)
+        if response.status_code != 429:
+            break
+        # Rate limited rather than refused: this job is still perfectly good,
+        # it was only offered too quickly. Backing off keeps the batch whole.
+        time.sleep(SUBMIT_INTERVAL * (2 ** attempt))
     if response.status_code == 401:
         raise HordeError("The horde rejected this API key.")
     if response.status_code == 429:
-        raise HordeError("Too many jobs queued on this key at once; collect some first.")
+        raise HordeError("The horde is rate limiting submissions; try a smaller batch.")
     if response.status_code >= 400:
         raise HordeError(f"The horde refused the job: HTTP {response.status_code} "
                          f"{response.text[:200]}")
@@ -194,6 +216,29 @@ def check(job_id: str, api_key: str = ANON_KEY, timeout: int = 30) -> dict:
                               headers=_headers(api_key), timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+
+def _is_blank(data: bytes) -> bool:
+    """True when the image carries no picture at all.
+
+    The third way a refusal arrives. With the safety filter on, a blocked job
+    returns a CENSORED card; with it off, the same job returns a frame that is
+    uniformly black - correct size, ``censored`` false, nothing drawn. Both
+    measured. Only the pixels distinguish the second kind from a real image,
+    so they have to be looked at.
+    """
+    try:
+        import io  # noqa: PLC0415
+
+        import numpy as np  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
+
+        with Image.open(io.BytesIO(data)) as image:
+            pixels = np.asarray(image.convert("RGB"), dtype=float)
+    except Exception:
+        return False        # unreadable is a different fault; do not mask it
+    # A real frame, even a night shot, varies. A refusal is flat to the bit.
+    return bool(pixels.std() < 1.0)
 
 
 def _dimensions(data: bytes):
@@ -252,6 +297,13 @@ def _collect(ticket: Ticket, api_key: str, timeout: int = 120) -> Path:
             f"That is usually a filter placeholder rather than a drawing."
         )
 
+    if _is_blank(image.content):
+        raise HordeError(
+            "The worker returned an empty black frame - its safety filter "
+            "blocked the prompt without saying so. Another Horde model "
+            "usually draws it."
+        )
+
     ticket.destination.parent.mkdir(parents=True, exist_ok=True)
     ticket.destination.write_bytes(image.content)
     ticket.extra.update(worker=first.get("worker_name"), model=first.get("model"),
@@ -303,35 +355,79 @@ def collect_all(tickets: Sequence[Ticket], api_key: str = ANON_KEY,
     return list(tickets)
 
 
-def generate_many(prompts: Sequence[str], destinations: Sequence,
-                  api_key: str = ANON_KEY, model: str = "", look: str = "anime",
-                  width: int = 768, height: int = 1344, steps: int = 24,
-                  seed: int = 0, nsfw: bool = False,
-                  timeout: float = 1800.0, poll: float = 15.0,
-                  on_progress: Optional[Callable[[List[Ticket]], None]] = None
-                  ) -> List[Ticket]:
-    """Draw a whole batch. Every job is queued before any is collected."""
-    if len(prompts) != len(destinations):
-        raise ValueError("prompts and destinations must be the same length")
-    chosen = model or pick_model(look)
+def _refused(ticket: Ticket) -> bool:
+    """Whether this shot failed in a way another model might not."""
+    reason = ticket.failed.lower()
+    return any(word in reason for word in ("safety filter", "black frame", "censored"))
 
+
+def _round(prompts: Sequence[str], destinations: Sequence, model: str,
+           api_key: str, width: int, height: int, steps: int, seed: int,
+           nsfw: bool, timeout: float, poll: float,
+           on_progress: Optional[Callable[[List[Ticket]], None]]) -> List[Ticket]:
+    """One pass over a batch with one model: submit all, then collect all."""
     tickets: List[Ticket] = []
     for index, (prompt, destination) in enumerate(zip(prompts, destinations)):
         try:
             tickets.append(submit(
-                prompt, destination, api_key=api_key, model=chosen,
+                prompt, destination, api_key=api_key, model=model,
                 width=width, height=height, steps=steps,
                 seed=(seed + index) if seed else 0, nsfw=nsfw))
         except HordeError as exc:
             failed = Ticket(job_id="", prompt=prompt, destination=Path(destination))
             failed.failed = str(exc)
             tickets.append(failed)
+        # Stay under the documented submission rate; see SUBMIT_INTERVAL.
+        if index + 1 < len(prompts):
+            time.sleep(SUBMIT_INTERVAL)
 
     queued = [t for t in tickets if t.job_id]
     if queued:
         collect_all(queued, api_key=api_key, timeout=timeout, poll=poll,
                     on_progress=on_progress)
     return tickets
+
+
+def generate_many(prompts: Sequence[str], destinations: Sequence,
+                  api_key: str = ANON_KEY, model: str = "", look: str = "anime",
+                  width: int = 768, height: int = 1344, steps: int = 24,
+                  seed: int = 0, nsfw: bool = False,
+                  timeout: float = 1800.0, poll: float = 15.0,
+                  retries: int = 2,
+                  on_progress: Optional[Callable[[List[Ticket]], None]] = None
+                  ) -> List[Ticket]:
+    """Draw a whole batch. Every job is queued before any is collected.
+
+    A shot refused by one model's safety filter is retried on the next
+    curated model rather than abandoned. That is not a nicety: one model
+    refused six prompts out of six, so without this a whole batch can come
+    back empty for a reason that has nothing to do with the prompts.
+    """
+    if len(prompts) != len(destinations):
+        raise ValueError("prompts and destinations must be the same length")
+
+    if model:
+        ladder = [model]
+    else:
+        ladder = [m.name for m in CURATED if m.look == look] or [DEFAULT_ANIME]
+    ladder = ladder[:max(1, retries + 1)]
+
+    results = _round(prompts, destinations, ladder[0], api_key, width, height,
+                     steps, seed, nsfw, timeout, poll, on_progress)
+
+    for fallback in ladder[1:]:
+        retry_at = [i for i, t in enumerate(results) if not t.done and _refused(t)]
+        if not retry_at:
+            break
+        logger.info("%d shot(s) refused; retrying on '%s'", len(retry_at), fallback)
+        again = _round([prompts[i] for i in retry_at],
+                       [destinations[i] for i in retry_at], fallback, api_key,
+                       width, height, steps, seed, nsfw, timeout, poll, on_progress)
+        for slot, ticket in zip(retry_at, again):
+            if ticket.done or not results[slot].failed:
+                results[slot] = ticket
+
+    return results
 
 
 def generate(prompt: str, destination, api_key: str = ANON_KEY, model: str = "",

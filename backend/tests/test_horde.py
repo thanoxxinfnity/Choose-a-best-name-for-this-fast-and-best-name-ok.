@@ -250,3 +250,146 @@ def test_a_real_image_of_the_right_size_is_saved(monkeypatch, tmp_path):
     assert out.exists() and out.stat().st_size > 2048
     assert ticket.extra["returned_size"] == (768, 1344)
     assert ticket.extra["worker"] == "w"
+
+
+# --- refusals that look like successes ------------------------------------
+
+def test_an_all_black_frame_is_rejected(monkeypatch, tmp_path):
+    """The second way a refusal arrives, and the quietest.
+
+    With the safety filter turned off, a blocked prompt comes back the right
+    size with ``censored`` false - and every pixel zero. Two measured runs
+    returned exactly this. Nothing in the envelope says so, so if the pixels
+    are not checked a black frame goes straight into the cut.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.fromarray(np.zeros((1344, 768, 3), dtype=np.uint8)).save(buffer, format="PNG")
+
+    _fake_status(monkeypatch,
+                 {"img": "https://x/i.webp", "state": "ok", "censored": False,
+                  "worker_name": "w"},
+                 buffer.getvalue())
+
+    with pytest.raises(horde.HordeError, match="empty black frame"):
+        horde._collect(_ticket(tmp_path), api_key="x")
+    assert not (tmp_path / "shot.webp").exists()
+
+
+def test_a_dark_but_real_frame_is_kept(monkeypatch, tmp_path):
+    # A night shot is dark. It must not be mistaken for a refusal, so the
+    # test that rejects blank frames has to be about variation, not level.
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(1)
+    dark = rng.integers(0, 24, (1344, 768, 3), dtype=np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray(dark).save(buffer, format="PNG")
+
+    _fake_status(monkeypatch,
+                 {"img": "https://x/i.webp", "state": "ok", "censored": False,
+                  "worker_name": "w"},
+                 buffer.getvalue())
+
+    assert horde._collect(_ticket(tmp_path), api_key="x").exists()
+
+
+# --- the submission rate limit --------------------------------------------
+
+def test_a_rate_limited_submission_is_retried_not_dropped(monkeypatch):
+    """The horde allows 2 submissions a second and 429s the rest.
+
+    A twenty-shot batch submitted in a tight loop loses most of itself to
+    this, and each loss looks like an ordinary refusal, so it must be
+    retried rather than recorded as failed.
+    """
+    calls = []
+
+    class _Post:
+        def __init__(self, code):
+            self.status_code, self.text = code, "2 per 1 second"
+
+        def json(self):
+            return {"id": "abc", "kudos": 6.0}
+
+    def post(url, **kwargs):
+        calls.append(url)
+        return _Post(429 if len(calls) < 3 else 202)
+
+    monkeypatch.setattr(horde, "_session",
+                        lambda: type("S", (), {"post": staticmethod(post)})())
+    monkeypatch.setattr(horde.time, "sleep", lambda *a: None)
+
+    ticket = horde.submit("a rooftop", "/tmp/x.webp", model="M")
+    assert ticket.job_id == "abc"
+    assert len(calls) == 3, "it must keep trying, not give up on the first 429"
+
+
+def test_submissions_are_spaced_out(monkeypatch):
+    # The retry above is the safety net; the spacing is what stops the batch
+    # tripping the limit in the first place.
+    slept = []
+    monkeypatch.setattr(horde.time, "sleep", lambda seconds: slept.append(seconds))
+    monkeypatch.setattr(horde, "submit",
+                        lambda prompt, destination, **k: horde.Ticket(
+                            job_id="j", prompt=prompt, destination=Path(destination)))
+    monkeypatch.setattr(horde, "collect_all", lambda tickets, **k: list(tickets))
+
+    horde.generate_many(["a", "b", "c"], ["/tmp/1", "/tmp/2", "/tmp/3"], model="M")
+    assert len([s for s in slept if s >= horde.SUBMIT_INTERVAL]) >= 2
+
+
+# --- retrying a refusal on another model ----------------------------------
+
+def test_a_refused_shot_is_retried_on_a_different_model(monkeypatch):
+    """One model refused six prompts out of six in testing.
+
+    Without a retry on another model, a whole batch comes back empty for a
+    reason that has nothing to do with what was asked for.
+    """
+    tried = []
+
+    def fake_round(prompts, destinations, model, *args, **kwargs):
+        tried.append((model, list(prompts)))
+        out = []
+        for prompt, destination in zip(prompts, destinations):
+            ticket = horde.Ticket(job_id="j", prompt=prompt,
+                                  destination=Path(destination))
+            if model == horde.CURATED[0].name and prompt == "b":
+                ticket.failed = "The worker returned an empty black frame."
+            else:
+                ticket.done = True
+            out.append(ticket)
+        return out
+
+    monkeypatch.setattr(horde, "_round", fake_round)
+    results = horde.generate_many(["a", "b"], ["/tmp/1", "/tmp/2"], look="anime")
+
+    assert [t.done for t in results] == [True, True]
+    assert len(tried) == 2, "the refused shot should have had a second model"
+    assert tried[1][1] == ["b"], "only the refused shot should be redone"
+    assert tried[1][0] != tried[0][0], "and on a different model"
+
+
+def test_a_failure_that_another_model_cannot_fix_is_not_retried(monkeypatch):
+    # Retrying a job the horde faulted just burns another queue wait.
+    tried = []
+
+    def fake_round(prompts, destinations, model, *args, **kwargs):
+        tried.append(model)
+        ticket = horde.Ticket(job_id="j", prompt=prompts[0],
+                              destination=Path(destinations[0]))
+        ticket.failed = "The horde faulted this job."
+        return [ticket]
+
+    monkeypatch.setattr(horde, "_round", fake_round)
+    results = horde.generate_many(["a"], ["/tmp/1"], look="anime")
+    assert len(tried) == 1
+    assert not results[0].done
