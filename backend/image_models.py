@@ -65,19 +65,20 @@ MODELS: Tuple[ImageModel, ...] = (
 
     # AI Horde: a volunteer GPU pool. No bill and no quota, which nothing
     # above can say, and it needs no key at all - it falls back to a shared
-    # anonymous account. It is paid for in waiting instead: a measured single
-    # image took 281 seconds, nearly all of it queueing, so these are for a
-    # batch left to run rather than for one image someone is watching for.
-    ImageModel("horde:Nova Anime XL", "Horde - Nova Anime", "anime", True, 281.0,
-               "Free forever, no key needed. Slow, so best in a batch.",
+    # anonymous account. It is paid for in waiting instead, and the wait is
+    # mostly queueing rather than drawing, so it is spread across a batch:
+    # six portrait shots took 145 seconds together, about 24 seconds each,
+    # where one alone took 245. The seconds below are that per-shot figure.
+    ImageModel("horde:AlbedoBase XL (SDXL)", "Horde - AlbedoBase XL", "both", True, 24.0,
+               "Free forever, no key needed. Six for six in testing.", "horde"),
+    ImageModel("horde:Rag Illustrious Mix", "Horde - Illustrious", "anime", True, 24.0,
+               "Free forever. Sharper lineart.", "horde"),
+    ImageModel("horde:Nova Anime XL", "Horde - Nova Anime", "anime", True, 24.0,
+               "Free forever, but its filter refused six prompts out of six.",
                "horde"),
-    ImageModel("horde:Rag Illustrious Mix", "Horde - Illustrious", "anime", True, 281.0,
-               "Free forever. Sharper lineart than Nova.", "horde"),
-    ImageModel("horde:AlbedoBase XL (SDXL)", "Horde - AlbedoBase XL", "both", True, 281.0,
-               "Free forever. Even-handed on both looks.", "horde"),
-    ImageModel("horde:ICBINP XL", "Horde - ICBINP XL", "photoreal", True, 281.0,
+    ImageModel("horde:ICBINP XL", "Horde - ICBINP XL", "photoreal", True, 24.0,
                "Free forever. Photographic people.", "horde"),
-    ImageModel("horde:Juggernaut XL", "Horde - Juggernaut XL", "photoreal", True, 281.0,
+    ImageModel("horde:Juggernaut XL", "Horde - Juggernaut XL", "photoreal", True, 24.0,
                "Free forever. Photoreal with strong lighting.", "horde"),
 )
 

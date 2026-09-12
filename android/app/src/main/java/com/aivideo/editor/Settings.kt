@@ -246,9 +246,9 @@ private val IMAGE_MODELS = listOf(
     ImageModelChoice("flux-2-flex", "FLUX 2 Flex", Tier.PAID),
     // AI Horde: no account, no quota, no bill - it draws even with every
     // field on this screen left blank. Slow, so it is listed last.
-    ImageModelChoice("horde:Nova Anime XL", "Horde Anime", Tier.NO_KEY),
-    ImageModelChoice("horde:Rag Illustrious Mix", "Horde Illustrious", Tier.NO_KEY),
     ImageModelChoice("horde:AlbedoBase XL (SDXL)", "Horde AlbedoBase", Tier.NO_KEY),
+    ImageModelChoice("horde:Rag Illustrious Mix", "Horde Illustrious", Tier.NO_KEY),
+    ImageModelChoice("horde:Nova Anime XL", "Horde Nova", Tier.NO_KEY),
     ImageModelChoice("horde:ICBINP XL", "Horde ICBINP (photo)", Tier.NO_KEY),
     ImageModelChoice("horde:Juggernaut XL", "Horde Juggernaut (photo)", Tier.NO_KEY),
 )
@@ -387,10 +387,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.error,
                     )
                     Tier.NO_KEY -> Text(
-                        "Free with no account and no limit, but slow: a measured image " +
-                            "took about 5 minutes, nearly all of it queueing. A whole " +
-                            "batch is queued at once, so twenty shots cost about what " +
-                            "one does - good to start and leave running.",
+                        "Free with no account and no limit. The wait is mostly " +
+                            "queueing, so it is spread across a batch: six shots took " +
+                            "145 seconds together, where one alone took 245. Horde " +
+                            "AlbedoBase is the one measured drawing six out of six.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

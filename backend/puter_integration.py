@@ -521,7 +521,7 @@ class PuterClient:
             attempts.append((picked, "the model you picked"))
         if self.pollinations_key:
             attempts.append((image_models.DEFAULT_MODEL, "Pollinations"))
-        attempts.append(("horde:Nova Anime XL", "the AI Horde"))
+        attempts.append(("horde:AlbedoBase XL (SDXL)", "the AI Horde"))
 
         failures: list[str] = []
         seen: set[str] = set()
